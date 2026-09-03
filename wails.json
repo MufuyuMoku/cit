@@ -1,0 +1,19 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "CIT",
+  "outputfilename": "cit",
+  "frontend:install": "npm ci --no-audit --no-fund",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "http://localhost:5173",
+  "wailsjsdir": "./frontend/src/lib",
+  "author": {
+    "name": "CIT"
+  },
+  "info": {
+    "companyName": "CIT",
+    "productName": "CIT",
+    "productIdentifier": "com.cit.app",
+    "comments": "Pelacak versi berkas desain. Tanpa server, tanpa akun, tanpa internet."
+  }
+}

@@ -1,0 +1,26 @@
+:root {
+	color-scheme: dark;
+	--bg: #121214;
+	--fg: #e8e8ea;
+	--muted: #8a8a93;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	margin: 0;
+	height: 100%;
+}
+
+body {
+	background: var(--bg);
+	color: var(--fg);
+	font-family:
+		'Segoe UI', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+	font-size: 14px;
+	-webkit-font-smoothing: antialiased;
+	user-select: none;
+}

@@ -1,0 +1,17 @@
+# Build output
+/build/bin/
+/frontend/build/*
+!/frontend/build/.gitkeep
+/frontend/.svelte-kit/
+/frontend/node_modules/
+
+# Wails-generated JS/TS bindings — regenerated on every `wails build` / `wails dev`
+/frontend/src/lib/wailsjs/
+
+# Wails' cache marker for "do I need to re-run npm install?"
+/frontend/package.json.md5
+
+# Local scratch
+*.local
+.DS_Store
+Thumbs.db

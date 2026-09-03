@@ -1,0 +1,118 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOPROXY: https://proxy.golang.org,direct
+  WAILS_VERSION: v2.11.0
+
+jobs:
+  # The core layers must stay pure Go: no cgo, anywhere, ever. This job is the
+  # guard for that rule. It deliberately excludes the desktop shell (root and
+  # ./cmd), because Wails itself forces CGO_ENABLED=1 on macOS and Linux to
+  # bind webkit2gtk and Cocoa — see pkg/commands/build/base.go upstream. The
+  # shell is covered by the build matrix below.
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./internal/...
+
+      - name: go test
+        run: go test -count=1 ./internal/...
+
+  build:
+    name: build (${{ matrix.platform }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows/amd64
+            buildtags: ''
+            artifact: cit-windows-amd64
+          - os: macos-latest
+            platform: darwin/universal
+            buildtags: ''
+            artifact: cit-macos-universal
+          - os: ubuntu-latest
+            platform: linux/amd64
+            # Ubuntu 24.04 ships webkit2gtk 4.1; 4.0 is gone.
+            buildtags: webkit2_41
+            artifact: cit-linux-amd64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # git describe needs the full history and the tags.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          # Satu sumber kebenaran untuk versi Node: .nvmrc di akar repo.
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
+
+      - name: Derive build metadata
+        id: meta
+        shell: bash
+        run: |
+          module=$(go list -m)
+          version=$(git describe --tags --always --dirty 2>/dev/null || echo 0.0.0-dev)
+          commit=$(git rev-parse HEAD)
+          date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "ldflags=-X $module/cmd.Version=$version -X $module/cmd.Commit=$commit -X $module/cmd.BuildDate=$date" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        shell: bash
+        run: |
+          wails build \
+            -platform ${{ matrix.platform }} \
+            -tags "${{ matrix.buildtags }}" \
+            -clean -trimpath \
+            -ldflags "${{ steps.meta.outputs.ldflags }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-${{ steps.meta.outputs.version }}
+          path: build/bin/*
+          if-no-files-found: error
