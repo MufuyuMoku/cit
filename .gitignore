@@ -11,6 +11,10 @@
 # Wails' cache marker for "do I need to re-run npm install?"
 /frontend/package.json.md5
 
+# Spesifikasi versi PDF disimpan di luar repo. docs/spesifikasi.md adalah
+# sumber kebenaran; PDF hanyalah cetakan darinya dan tidak perlu diversikan.
+*.pdf
+
 # Local scratch
 *.local
 .DS_Store

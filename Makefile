@@ -3,7 +3,7 @@
 # On Windows without GNU make, use the equivalent PowerShell wrapper:
 #   .\make.ps1 dev | test | build
 
-MODULE  := github.com/clownface471/cit
+MODULE  := github.com/MufuyuMoku/cit
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.0.0-dev)
 COMMIT  ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)

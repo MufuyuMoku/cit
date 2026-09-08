@@ -17,7 +17,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 
-$Module = 'github.com/clownface471/cit'
+$Module = 'github.com/MufuyuMoku/cit'
 
 function Get-GitValue {
     param([string[]]$GitArgs, [string]$Fallback)

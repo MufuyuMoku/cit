@@ -22,7 +22,7 @@ Pakai ini untuk menjawab sendiri keputusan desain yang belum tertulis:
 
 Nama proyek: **CIT**. Ini nama kerja dan belum punya kepanjangan — jangan mengarang akronim untuknya, dan jangan menawarkan nama alternatif.
 
-Module path Go: `github.com/clownface471/cit`. Nama aplikasi yang tampil di jendela dan di installer: `CIT`.
+Module path Go: `github.com/MufuyuMoku/cit`. Nama aplikasi yang tampil di jendela dan di installer: `CIT`.
 
 ## Tumpukan dan batasan keras
 

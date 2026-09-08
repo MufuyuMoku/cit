@@ -24,7 +24,7 @@ Kendali nyata datang dari kemampuan membatalkan, bukan dari banyaknya konfirmasi
 
 ## 2b. Nama
 
-Nama proyek: **CIT**. Nama kerja, belum punya kepanjangan; jangan diarang-arang jadi akronim. Module path Go: `github.com/clownface471/cit`.
+Nama proyek: **CIT**. Nama kerja, belum punya kepanjangan; jangan diarang-arang jadi akronim. Module path Go: `github.com/MufuyuMoku/cit`.
 
 ## 3. Tumpukan teknologi
 

@@ -1,4 +1,4 @@
-module github.com/clownface471/cit
+module github.com/MufuyuMoku/cit
 
 go 1.25.5
 

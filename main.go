@@ -9,7 +9,7 @@ package main
 import (
 	"embed"
 
-	"github.com/clownface471/cit/cmd"
+	"github.com/MufuyuMoku/cit/cmd"
 )
 
 //go:embed all:frontend/build

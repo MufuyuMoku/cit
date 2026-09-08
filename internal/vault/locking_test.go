@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/clownface471/cit/internal/store"
+	"github.com/MufuyuMoku/cit/internal/store"
 )
 
 // These tests cover what the read/write lock split made possible for the first

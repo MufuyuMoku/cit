@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/clownface471/cit/internal/store"
+	"github.com/MufuyuMoku/cit/internal/store"
 )
 
 // newTestVault returns a vault backed by a fresh temporary directory and
