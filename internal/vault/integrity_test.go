@@ -209,11 +209,14 @@ func TestGCHonoursCancellation(t *testing.T) {
 	requireRefcountsConsistent(t, db)
 }
 
-// cancelAfterN cancels a context once n bytes have been read.
+// cancelAfterN cancels a context once n bytes have been read. If after is set,
+// it is closed at the same moment, so another goroutine can be released exactly
+// when the cancellation lands.
 type cancelAfterN struct {
 	r      io.Reader
 	n      int64
 	cancel context.CancelFunc
+	after  chan struct{}
 	fired  bool
 }
 
@@ -223,6 +226,9 @@ func (c *cancelAfterN) Read(p []byte) (int, error) {
 	if c.n <= 0 && !c.fired {
 		c.fired = true
 		c.cancel()
+		if c.after != nil {
+			close(c.after)
+		}
 	}
 	return n, err
 }

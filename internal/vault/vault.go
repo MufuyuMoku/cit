@@ -38,10 +38,17 @@ var ErrCorrupt = errors.New("vault: isi bongkahan tidak cocok dengan hash-nya")
 //
 // Methods are safe for concurrent use within one process. The vault directory
 // must not be shared between processes.
+//
+// Locking: mu separates the operations that read or add blobs from the one that
+// deletes them. Store and Restore take it for reading, so any number of them
+// run at once; GC takes it for writing, so it never runs while a Store is
+// deciding a blob already exists or a Restore is reading one. Exists and
+// Release touch nothing but the database and take no lock at all, which is what
+// keeps the interface responsive while a large file is being stored.
 type Vault struct {
 	root string
 	db   *sql.DB
-	mu   sync.Mutex
+	mu   sync.RWMutex
 }
 
 // GCStats reports what a GC pass reclaimed.
@@ -80,6 +87,8 @@ func Open(root string, db *sql.DB) (*Vault, error) {
 
 // Close releases resources held by the vault. It does not close the database.
 func (v *Vault) Close() error {
+	// Exclusive: clearStaging would pull the ground out from under a running
+	// Store.
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	return v.clearStaging()
@@ -108,17 +117,23 @@ func (v *Vault) clearStaging() error {
 // Storing content that is already present adds no new chunks; it only records
 // another reference to it.
 //
-// If r fails partway, Store leaves nothing behind: no chunks, no reference
-// count changes. New blobs are written to a staging directory first and only
-// moved into the store once the whole stream has been read.
+// If r fails or ctx is cancelled while the stream is still being read — which
+// is where a long Store spends all its time — nothing is left behind at all:
+// new blobs go to a staging directory that is removed on the way out, and no
+// reference count has moved yet.
 //
-// Cancelling ctx aborts the read and leaves nothing behind, by the same route
-// as any other mid-stream failure. Once the staged blobs start moving into
-// place the operation runs to completion or undoes itself; there is no window
-// where a cancellation can leave the store half-written.
+// One deliberate exception: if the failure happens after staged blobs have
+// already been moved into the store, those blobs stay. They cannot be rolled
+// back, because a concurrent Store may already have seen them on disk, skipped
+// writing its own copy, and be about to commit a row that refers to them.
+// Deleting them would leave that row pointing at nothing, which is exactly the
+// corruption the write ordering exists to prevent. What is left instead is an
+// orphan blob with no row, which GC reclaims.
 func (v *Vault) Store(ctx context.Context, r io.Reader) (string, error) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
+	// Shared: concurrent Stores are fine, and each one is transactional at the
+	// database. Only GC needs everyone out of the way.
+	v.mu.RLock()
+	defer v.mu.RUnlock()
 
 	stage, err := os.MkdirTemp(v.stageRoot(), "store-")
 	if err != nil {
@@ -184,14 +199,11 @@ func (v *Vault) Store(ctx context.Context, r io.Reader) (string, error) {
 	// and a later Store would then skip writing it because the row exists:
 	// silent, permanent data loss. This way a crash leaves an orphan blob,
 	// which wastes space until the next GC and nothing more.
-	moved, err := v.commitBlobs(staged)
-	if err != nil {
-		v.removeBlobs(moved)
+	if err := v.commitBlobs(staged); err != nil {
 		return "", err
 	}
 
 	if err := v.recordFile(ctx, fileHash, total, order, sizes); err != nil {
-		v.removeBlobs(moved)
 		return "", err
 	}
 
@@ -200,28 +212,39 @@ func (v *Vault) Store(ctx context.Context, r io.Reader) (string, error) {
 	return fileHash, nil
 }
 
-// commitBlobs moves staged blobs into the store, returning those it moved so a
-// later failure can undo them.
-func (v *Vault) commitBlobs(staged map[string]string) ([]string, error) {
-	moved := make([]string, 0, len(staged))
+// commitBlobs moves staged blobs into the store. It is one-way: see the note on
+// Store about why a blob that has landed is never taken back.
+func (v *Vault) commitBlobs(staged map[string]string) error {
 	for chunkHash, stagePath := range staged {
 		dst := v.blobPath(chunkHash)
-		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-			return moved, fmt.Errorf("vault: siapkan direktori bongkahan: %w", err)
-		}
-		if err := os.Rename(stagePath, dst); err != nil {
-			return moved, fmt.Errorf("vault: pindahkan bongkahan %s: %w", short(chunkHash), err)
-		}
-		moved = append(moved, chunkHash)
-	}
-	return moved, nil
-}
 
-// removeBlobs undoes commitBlobs on a best-effort basis.
-func (v *Vault) removeBlobs(chunkHashes []string) {
-	for _, h := range chunkHashes {
-		os.Remove(v.blobPath(h))
+		// A concurrent Store may have put the same chunk there already. The
+		// content is identical by construction — the name is the hash of it —
+		// so its copy is as good as ours and there is no reason to rename over
+		// a file another goroutine may be reading.
+		if _, err := os.Stat(dst); err == nil {
+			os.Remove(stagePath)
+			continue
+		}
+
+		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+			return fmt.Errorf("vault: siapkan direktori bongkahan: %w", err)
+		}
+
+		if err := os.Rename(stagePath, dst); err != nil {
+			// Losing that race is normal, not an error. Two Stores can both
+			// find the blob missing and both try to move their own copy in;
+			// Windows refuses the second rename outright rather than replacing
+			// the file. Either way the chunk is now in the store, which is all
+			// this function was asked to achieve.
+			if _, statErr := os.Stat(dst); statErr == nil {
+				os.Remove(stagePath)
+				continue
+			}
+			return fmt.Errorf("vault: pindahkan bongkahan %s: %w", short(chunkHash), err)
+		}
 	}
+	return nil
 }
 
 // recordFile writes the manifest and reference counts in one transaction.
@@ -290,8 +313,10 @@ func (v *Vault) recordFile(ctx context.Context, fileHash string, size int64, ord
 // The check is not optional. It costs nothing worth measuring: SHA-256 runs
 // faster than the disk the chunk was just read from.
 func (v *Vault) Restore(ctx context.Context, fileHash string, w io.Writer) error {
-	v.mu.Lock()
-	defer v.mu.Unlock()
+	// Shared: reading blobs is safe alongside other readers and alongside a
+	// Store adding new ones. Only GC, which deletes them, is excluded.
+	v.mu.RLock()
+	defer v.mu.RUnlock()
 
 	if err := v.requireFile(ctx, fileHash); err != nil {
 		return err
@@ -397,9 +422,7 @@ func (v *Vault) chunkOrder(ctx context.Context, fileHash string) ([]string, erro
 
 // Exists reports whether the content for fileHash is still stored.
 func (v *Vault) Exists(fileHash string) (bool, error) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-
+	// No lock: one indexed read, serialised by the database like any other.
 	var refcount int
 	err := v.db.QueryRow(`SELECT refcount FROM files WHERE hash = ?`, fileHash).Scan(&refcount)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -415,9 +438,9 @@ func (v *Vault) Exists(fileHash string) (bool, error) {
 // file's chunks have their reference counts decremented; chunks that reach zero
 // become eligible for GC. Release never deletes anything from disk itself.
 func (v *Vault) Release(fileHash string) error {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-
+	// No lock: the whole operation is one database transaction, and it only
+	// ever lowers reference counts. A chunk it drops to zero is picked up by
+	// the next GC, which does take the lock.
 	tx, err := v.db.Begin()
 	if err != nil {
 		return fmt.Errorf("vault: mulai transaksi: %w", err)
@@ -473,28 +496,29 @@ func (v *Vault) GC(ctx context.Context) (GCStats, error) {
 
 	var stats GCStats
 
-	doomed, err := v.unreferencedChunks(ctx)
+	// The delete and the list of what was deleted have to be the same statement.
+	// Reading the unreferenced chunks and then deleting them separately leaves a
+	// window in which a Store can raise a refcount back above zero: the DELETE
+	// then correctly spares that row, but the hash is already on the list of
+	// blobs to unlink, and the blob goes anyway. A live row pointing at nothing
+	// is the one failure this package cannot recover from.
+	doomed, err := v.deleteUnreferencedChunks(ctx)
 	if err != nil {
 		return stats, err
 	}
 
-	// Rows first, then the files they point at. A crash in between leaves an
-	// orphan blob, which the sweep below reclaims. The other order would leave
-	// a row with no blob, which is unrecoverable.
-	if len(doomed) > 0 {
-		if _, err := v.db.ExecContext(ctx, `DELETE FROM chunks WHERE refcount = 0`); err != nil {
-			return stats, fmt.Errorf("vault: hapus baris bongkahan: %w", err)
+	// Rows are gone and committed before any blob is unlinked. A crash in
+	// between leaves an orphan blob, which the sweep below reclaims. The other
+	// order would leave a row with no blob, which is unrecoverable.
+	for _, c := range doomed {
+		if err := ctx.Err(); err != nil {
+			return stats, err
 		}
-		for _, c := range doomed {
-			if err := ctx.Err(); err != nil {
-				return stats, err
-			}
-			if err := os.Remove(v.blobPath(c.hash)); err != nil && !os.IsNotExist(err) {
-				return stats, fmt.Errorf("vault: hapus blob %s: %w", short(c.hash), err)
-			}
-			stats.ChunksRemoved++
-			stats.BytesReclaimed += c.size
+		if err := os.Remove(v.blobPath(c.hash)); err != nil && !os.IsNotExist(err) {
+			return stats, fmt.Errorf("vault: hapus blob %s: %w", short(c.hash), err)
 		}
+		stats.ChunksRemoved++
+		stats.BytesReclaimed += c.size
 	}
 
 	orphans, bytes, err := v.sweepOrphans(ctx)
@@ -512,23 +536,39 @@ type doomedChunk struct {
 	size int64
 }
 
-func (v *Vault) unreferencedChunks(ctx context.Context) ([]doomedChunk, error) {
-	rows, err := v.db.QueryContext(ctx, `SELECT hash, size FROM chunks WHERE refcount = 0`)
+// deleteUnreferencedChunks removes every chunk row whose refcount has reached
+// zero and reports what it removed, in one atomic statement inside one
+// transaction. The caller unlinks the blobs afterwards.
+func (v *Vault) deleteUnreferencedChunks(ctx context.Context) ([]doomedChunk, error) {
+	tx, err := v.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("vault: cari bongkahan tak dirujuk: %w", err)
+		return nil, fmt.Errorf("vault: mulai transaksi: %w", err)
 	}
-	defer rows.Close()
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx,
+		`DELETE FROM chunks WHERE refcount = 0 RETURNING hash, size`)
+	if err != nil {
+		return nil, fmt.Errorf("vault: hapus bongkahan tak dirujuk: %w", err)
+	}
 
 	var out []doomedChunk
 	for rows.Next() {
 		var c doomedChunk
 		if err := rows.Scan(&c.hash, &c.size); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("vault: baca bongkahan: %w", err)
 		}
 		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("vault: cari bongkahan tak dirujuk: %w", err)
+		rows.Close()
+		return nil, fmt.Errorf("vault: hapus bongkahan tak dirujuk: %w", err)
+	}
+	rows.Close()
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("vault: commit: %w", err)
 	}
 	return out, nil
 }
