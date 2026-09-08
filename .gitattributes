@@ -1,0 +1,41 @@
+# Line endings are normalised to LF in the repository. Without this, a commit
+# from Windows and a commit from Linux disagree about every line of every file.
+* text=auto eol=lf
+
+# Windows shells want CRLF on disk.
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# Never touched: normalising a byte inside these would corrupt them.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.icns  binary
+*.pdf   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.zip   binary
+*.mp4   binary
+*.psd   binary
+*.kra   binary
+
+# Test fixtures. The vault's chunk boundaries are derived from the exact bytes
+# of its input, so a fixture whose line endings got rewritten would silently
+# move every boundary and break the format-freeze tests -- or worse, pass while
+# testing the wrong thing.
+#
+# There are no binary fixtures in the tree today: internal/vault generates its
+# test data at runtime from a seeded ChaCha8 stream, which nothing on disk can
+# corrupt. These rules are here so that adding one later is safe by default.
+*.bin        binary
+*.blob       binary
+testdata/**  binary
+**/testdata/** binary
+
+# Generated, and excluded from language statistics.
+frontend/package-lock.json  linguist-generated=true

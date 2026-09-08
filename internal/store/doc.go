@@ -1,7 +1,9 @@
 // Package store owns the SQLite database: schema, migrations, and queries.
 //
-// Version metadata lives here and is never pruned — retention only ever
-// discards chunks, so the timeline can never have a hole in it.
+// So far it holds only the vault's tables — chunks, files, and the ordered
+// file_chunks mapping between them. Asset, version and ticket tables belong to
+// later milestones.
 //
-// Nothing is implemented yet beyond the driver registration in driver.go.
+// Version metadata will live here and is never pruned: retention only ever
+// discards chunks, so the timeline can never have a hole in it.
 package store

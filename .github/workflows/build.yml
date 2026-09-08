@@ -41,6 +41,17 @@ jobs:
       - name: go test
         run: go test -count=1 ./internal/...
 
+      # The race detector needs cgo, so this step cannot run under the
+      # CGO_ENABLED=0 rule above. That is fine: the rule exists to keep cgo out
+      # of the shipped binary and out of third-party dependencies, and the step
+      # above still proves that. This one only adds instrumentation on top, and
+      # it is the only place the vault's concurrency claims get checked -- the
+      # Windows dev machine has no gcc.
+      - name: go test -race
+        env:
+          CGO_ENABLED: '1'
+        run: go test -race -count=1 ./internal/...
+
   build:
     name: build (${{ matrix.platform }})
     needs: test
