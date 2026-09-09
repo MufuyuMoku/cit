@@ -1,14 +1,20 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/url"
 	"strings"
 )
 
-// Open opens the CIT database at path, creating it if necessary, and applies
-// the schema. The caller owns the returned handle and must Close it.
+// Open opens the CIT database at path, creating it if necessary, and migrates
+// it to the schema version this build understands. The caller owns the returned
+// handle and must Close it.
+//
+// A database written by a newer build is refused with ErrSchemaTooNew rather
+// than opened: it may contain tables and columns this code knows nothing about,
+// and writing to it anyway would damage the user's vault irreversibly.
 //
 // Pass ":memory:" for a throwaway in-memory database.
 func Open(path string) (*sql.DB, error) {
@@ -27,9 +33,9 @@ func Open(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("store: ping %s: %w", path, err)
 	}
 
-	if _, err := db.Exec(schema); err != nil {
+	if err := migrateWith(context.Background(), db, migrations); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("store: apply schema: %w", err)
+		return nil, err
 	}
 
 	return db, nil
