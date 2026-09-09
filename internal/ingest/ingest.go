@@ -727,6 +727,18 @@ func (i *Ingester) applyRename(
 	if err := store.DeleteObservedFile(ctx, tx, source.Path); err != nil {
 		return 0, err
 	}
+
+	// A rename moves the file, not its history. Versions are tied to the file
+	// by file_key, and the user's manual grouping judgements are tied to it by
+	// path; both have to follow, or splitting an asset later would strand the
+	// older versions and the decision would quietly stop applying.
+	if err := store.RenameVersionFileKey(ctx, tx, source.Path, newPath); err != nil {
+		return 0, err
+	}
+	if err := store.RenameGroupingDecisions(ctx, tx, source.Path, newPath); err != nil {
+		return 0, err
+	}
+
 	delete(i.sightings, source.Path)
 	delete(i.vanishedSince, source.Path)
 	if err := store.PutObservedFile(ctx, tx, store.ObservedFile{
@@ -765,6 +777,7 @@ func (i *Ingester) recordVersion(
 		ObservedAt: now,
 		ModifiedAt: info.ModTime(),
 		SourcePath: path,
+		FileKey:    path,
 	}); err != nil {
 		return 0, err
 	}

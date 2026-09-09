@@ -33,13 +33,19 @@ type Asset struct {
 // ContentPresent goes false and ContentReleasedAt is set; the row itself stays,
 // so the timeline never has a hole in it.
 type Version struct {
-	ID                int64
-	AssetID           int64
-	FileHash          string
-	Size              int64
-	ObservedAt        time.Time
-	ModifiedAt        time.Time
-	SourcePath        string
+	ID         int64
+	AssetID    int64
+	FileHash   string
+	Size       int64
+	ObservedAt time.Time
+	ModifiedAt time.Time
+	SourcePath string
+
+	// FileKey is the tracked path this version belongs to, following the file
+	// through renames. SourcePath records where it was; FileKey records what it
+	// is part of.
+	FileKey string
+
 	ContentPresent    bool
 	ContentReleasedAt time.Time
 	Pinned            bool
@@ -121,13 +127,22 @@ func CountAssets(ctx context.Context, db DBTX) (int, error) {
 
 // AddVersion records one observed save and returns its id.
 func AddVersion(ctx context.Context, db DBTX, v Version) (int64, error) {
+	// file_key defaults to where the version was observed. It then follows the
+	// file through renames, while source_path stays as the historical record of
+	// where it actually was.
+	fileKey := v.FileKey
+	if fileKey == "" {
+		fileKey = v.SourcePath
+	}
+
 	res, err := db.ExecContext(ctx, `
 		INSERT INTO versions
-			(asset_id, file_hash, size, observed_at, modified_at, source_path, content_present, pinned)
-		VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
+			(asset_id, file_hash, size, observed_at, modified_at, source_path,
+			 content_present, pinned, file_key)
+		VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
 		v.AssetID, v.FileHash, v.Size,
 		v.ObservedAt.UnixNano(), v.ModifiedAt.UnixNano(), v.SourcePath,
-		boolToInt(v.Pinned))
+		boolToInt(v.Pinned), fileKey)
 	if err != nil {
 		return 0, fmt.Errorf("store: catat versi untuk karya %d: %w", v.AssetID, err)
 	}
@@ -143,7 +158,7 @@ func AddVersion(ctx context.Context, db DBTX, v Version) (int64, error) {
 func VersionsByAsset(ctx context.Context, db DBTX, assetID int64) ([]Version, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, asset_id, file_hash, size, observed_at, modified_at,
-		       source_path, content_present, content_released_at, pinned
+		       source_path, content_present, content_released_at, pinned, file_key
 		FROM versions
 		WHERE asset_id = ?
 		ORDER BY observed_at, id`, assetID)
@@ -170,7 +185,7 @@ func VersionsByAsset(ctx context.Context, db DBTX, assetID int64) ([]Version, er
 func LatestVersion(ctx context.Context, db DBTX, assetID int64) (Version, error) {
 	row := db.QueryRowContext(ctx, `
 		SELECT id, asset_id, file_hash, size, observed_at, modified_at,
-		       source_path, content_present, content_released_at, pinned
+		       source_path, content_present, content_released_at, pinned, file_key
 		FROM versions
 		WHERE asset_id = ?
 		ORDER BY observed_at DESC, id DESC
@@ -382,7 +397,7 @@ func scanVersion(s scanner) (Version, error) {
 	)
 	err := s.Scan(&v.ID, &v.AssetID, &v.FileHash, &v.Size,
 		&observedAt, &modifiedAt, &v.SourcePath,
-		&contentPresent, &releasedAt, &pinned)
+		&contentPresent, &releasedAt, &pinned, &v.FileKey)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Version{}, err

@@ -155,12 +155,20 @@ func TestVersionOneMigratesToTwoWithoutLosingRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateAsset: %v", err)
 	}
-	versionID, err := AddVersion(ctx, db, Version{
-		AssetID: assetID, FileHash: "abc123", Size: 4096,
-		ObservedAt: testTime, ModifiedAt: testTime, SourcePath: `C:\kerja\design.psd`,
-	})
+	// Written with the version 1 column list, because AddVersion now writes
+	// columns later migrations added.
+	res, err := db.ExecContext(ctx, `
+		INSERT INTO versions
+			(asset_id, file_hash, size, observed_at, modified_at, source_path, content_present, pinned)
+		VALUES (?, ?, ?, ?, ?, ?, 1, 0)`,
+		assetID, "abc123", int64(4096), testTime.UnixNano(), testTime.UnixNano(),
+		`C:\kerja\design.psd`)
 	if err != nil {
-		t.Fatalf("AddVersion: %v", err)
+		t.Fatalf("sisipkan versi versi 1: %v", err)
+	}
+	versionID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("LastInsertId: %v", err)
 	}
 	// Written with the version 1 column list, because PutObservedFile now
 	// expects the version 2 schema.

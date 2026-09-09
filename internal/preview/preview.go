@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -365,7 +366,10 @@ func (g *Generator) write(fileHash, format string, data []byte) error {
 
 // Open returns the thumbnail image for a piece of content, whatever format it
 // was encoded in.
-func (g *Generator) Open(fileHash string) (*os.File, error) {
+//
+// The return type is io.ReadCloser rather than *os.File so consumers can depend
+// on an interface they are able to substitute in tests.
+func (g *Generator) Open(fileHash string) (io.ReadCloser, error) {
 	path, ok := g.Locate(fileHash)
 	if !ok {
 		return nil, os.ErrNotExist

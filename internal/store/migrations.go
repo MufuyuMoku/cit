@@ -209,4 +209,54 @@ var migrations = []migration{
 			`ALTER TABLE previews ADD COLUMN alpha_flattened INTEGER NOT NULL DEFAULT 0`,
 		},
 	},
+	{
+		version: 5,
+		name:    "pengelompokan: file_key, phash, keputusan manual",
+		stmts: []string{
+			// Which tracked file a version came from, as opposed to where it
+			// happened to sit at the time.
+			//
+			// source_path is a historical record and must stay one: it says where
+			// this version was when we saw it. But grouping needs the opposite —
+			// a handle that follows a file through renames, so that splitting an
+			// asset moves the right versions with it. Without this, a file renamed
+			// after grouping would leave its older versions stranded on the wrong
+			// asset, and the timeline the user sees would quietly lose entries.
+			`ALTER TABLE versions ADD COLUMN file_key TEXT NOT NULL DEFAULT ''`,
+
+			// Existing rows: where the version was observed is the best available
+			// answer, and for anything that has not been renamed it is the right
+			// one.
+			`UPDATE versions SET file_key = source_path WHERE file_key = ''`,
+
+			`CREATE INDEX IF NOT EXISTS idx_versions_file_key ON versions(file_key)`,
+
+			// Perceptual hash of the thumbnail: 64 bits as 16 hex characters, empty
+			// when there is no thumbnail to hash. Stored beside the preview because
+			// it is derived from it and shares its lifetime — including surviving
+			// retention, which is the whole reason the thumbnail lives outside the
+			// vault.
+			`ALTER TABLE previews ADD COLUMN phash TEXT NOT NULL DEFAULT ''`,
+
+			// Decisions the user made by hand, and the reason this table exists at
+			// all: automatic grouping must never undo them.
+			//
+			// The system observes and proposes; the human decides. A guess that
+			// reasserts itself every scan is not a proposal, it is an argument the
+			// user cannot win — so once they have said "these two are not the same
+			// work", that is permanent and outranks any score.
+			//
+			// Keyed by path pair, always stored with path_a < path_b so a pair has
+			// exactly one row whichever order it is asked about.
+			`CREATE TABLE IF NOT EXISTS grouping_decisions (
+				path_a     TEXT    NOT NULL,
+				path_b     TEXT    NOT NULL,
+				decision   TEXT    NOT NULL CHECK (decision IN ('together', 'apart')),
+				decided_at INTEGER NOT NULL,
+				PRIMARY KEY (path_a, path_b)
+			) STRICT`,
+
+			`CREATE INDEX IF NOT EXISTS idx_grouping_decisions_b ON grouping_decisions(path_b)`,
+		},
+	},
 }
