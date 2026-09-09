@@ -259,4 +259,39 @@ var migrations = []migration{
 			`CREATE INDEX IF NOT EXISTS idx_grouping_decisions_b ON grouping_decisions(path_b)`,
 		},
 	},
+	{
+		version: 6,
+		name:    "file_key wajib terisi",
+		stmts: []string{
+			// Anything the earlier backfill could not reach, one more time before
+			// the rule below starts refusing writes.
+			`UPDATE versions SET file_key = source_path WHERE file_key = ''`,
+
+			// A version with no file_key is invisible to grouping: it never moves
+			// when an asset is split, so it silently detaches from the work it
+			// belongs to and disappears off the user's timeline. Nothing about that
+			// failure is loud — no error, no gap, just a version that stops being
+			// where it should be.
+			//
+			// SQLite cannot add a CHECK to an existing table, so the constraint is a
+			// pair of triggers. Same reasoning as versions_are_permanent: an
+			// invariant this expensive to violate is held by the database, not by
+			// every future caller remembering.
+			`CREATE TRIGGER IF NOT EXISTS versions_need_file_key_on_insert
+			BEFORE INSERT ON versions
+			WHEN NEW.file_key = ''
+			BEGIN
+				SELECT RAISE(ABORT,
+					'versi wajib punya file_key: tanpa itu versinya tertinggal saat karya dipisah');
+			END`,
+
+			`CREATE TRIGGER IF NOT EXISTS versions_need_file_key_on_update
+			BEFORE UPDATE OF file_key ON versions
+			WHEN NEW.file_key = ''
+			BEGIN
+				SELECT RAISE(ABORT,
+					'versi wajib punya file_key: tanpa itu versinya tertinggal saat karya dipisah');
+			END`,
+		},
+	},
 }

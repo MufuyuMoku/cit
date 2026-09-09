@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -186,4 +187,110 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(d)
+}
+
+// A version with an empty file_key never moves when an asset is split: it
+// detaches from its work and vanishes off the timeline, with no error anywhere.
+// The database refuses to store one rather than trusting every future caller.
+func TestVersionWithoutFileKeyIsRefused(t *testing.T) {
+	db := newTestDB(t)
+	ctx := t.Context()
+
+	assetID, err := CreateAsset(ctx, db, "karya.psd", testTime)
+	if err != nil {
+		t.Fatalf("CreateAsset: %v", err)
+	}
+
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO versions
+			(asset_id, file_hash, size, observed_at, modified_at, source_path,
+			 content_present, pinned, file_key)
+		VALUES (?, 'abc', 10, ?, ?, '/x/karya.psd', 1, 0, '')`,
+		assetID, testTime.UnixNano(), testTime.UnixNano())
+	if err == nil {
+		t.Fatal("versi tanpa file_key berhasil disimpan")
+	}
+	if !strings.Contains(err.Error(), "file_key") {
+		t.Errorf("galat = %v; mau pesan dari trigger", err)
+	}
+
+	if n, _ := CountVersions(ctx, db); n != 0 {
+		t.Errorf("%d versi tersimpan, mau 0", n)
+	}
+}
+
+// Blanking it later is the same failure arriving by a different route.
+func TestBlankingFileKeyIsRefused(t *testing.T) {
+	db := newTestDB(t)
+	ctx := t.Context()
+
+	assetID, _ := CreateAsset(ctx, db, "karya.psd", testTime)
+	if _, err := AddVersion(ctx, db, Version{
+		AssetID: assetID, FileHash: "abc", Size: 10,
+		ObservedAt: testTime, ModifiedAt: testTime,
+		SourcePath: "/x/karya.psd", FileKey: "/x/karya.psd",
+	}); err != nil {
+		t.Fatalf("AddVersion: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx, `UPDATE versions SET file_key = ''`); err == nil {
+		t.Fatal("file_key berhasil dikosongkan")
+	}
+
+	versions, err := VersionsByAsset(ctx, db, assetID)
+	if err != nil {
+		t.Fatalf("VersionsByAsset: %v", err)
+	}
+	if len(versions) != 1 || versions[0].FileKey != "/x/karya.psd" {
+		t.Errorf("file_key berubah: %+v", versions)
+	}
+}
+
+// AddVersion falls back to source_path, so an ordinary caller cannot trip the
+// rule by accident.
+func TestAddVersionFallsBackToSourcePath(t *testing.T) {
+	db := newTestDB(t)
+	ctx := t.Context()
+
+	assetID, _ := CreateAsset(ctx, db, "karya.psd", testTime)
+	if _, err := AddVersion(ctx, db, Version{
+		AssetID: assetID, FileHash: "abc", Size: 10,
+		ObservedAt: testTime, ModifiedAt: testTime,
+		SourcePath: "/x/karya.psd", // FileKey deliberately left empty
+	}); err != nil {
+		t.Fatalf("AddVersion: %v", err)
+	}
+
+	versions, _ := VersionsByAsset(ctx, db, assetID)
+	if len(versions) != 1 || versions[0].FileKey != "/x/karya.psd" {
+		t.Errorf("file_key = %q, mau jatuh ke source_path", versions[0].FileKey)
+	}
+}
+
+// Renaming must never blank it either.
+func TestRenameKeepsFileKeyNonEmpty(t *testing.T) {
+	db := newTestDB(t)
+	ctx := t.Context()
+
+	assetID, _ := CreateAsset(ctx, db, "karya.psd", testTime)
+	if _, err := AddVersion(ctx, db, Version{
+		AssetID: assetID, FileHash: "abc", Size: 10,
+		ObservedAt: testTime, ModifiedAt: testTime,
+		SourcePath: "/x/lama.psd", FileKey: "/x/lama.psd",
+	}); err != nil {
+		t.Fatalf("AddVersion: %v", err)
+	}
+
+	if err := RenameVersionFileKey(ctx, db, "/x/lama.psd", "/x/baru.psd"); err != nil {
+		t.Fatalf("RenameVersionFileKey: %v", err)
+	}
+
+	versions, _ := VersionsByAsset(ctx, db, assetID)
+	if versions[0].FileKey != "/x/baru.psd" {
+		t.Errorf("file_key = %q setelah ganti nama, mau /x/baru.psd", versions[0].FileKey)
+	}
+	// source_path is history and must not have moved.
+	if versions[0].SourcePath != "/x/lama.psd" {
+		t.Errorf("source_path = %q; catatan sejarah tidak boleh berubah", versions[0].SourcePath)
+	}
 }
