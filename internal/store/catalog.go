@@ -447,3 +447,166 @@ func shortHash(hash string) string {
 	}
 	return hash
 }
+
+// --- previews ---------------------------------------------------------------
+
+// PreviewStatus is what came of trying to render a thumbnail.
+type PreviewStatus string
+
+const (
+	// PreviewOK: a thumbnail exists on disk.
+	PreviewOK PreviewStatus = "ok"
+	// PreviewUnsupported: the format has no rung on the preview ladder. Not an
+	// error — a CapCut project file is a list of references, not a picture.
+	PreviewUnsupported PreviewStatus = "unsupported"
+	// PreviewFailed: we should have been able to render it and could not. The
+	// file may be corrupt or truncated.
+	PreviewFailed PreviewStatus = "failed"
+)
+
+// Preview records the outcome of one thumbnail attempt, keyed by the content it
+// was made from.
+type Preview struct {
+	FileHash    string
+	Status      PreviewStatus
+	Source      string
+	Width       int
+	Height      int
+	Bytes       int64
+	AttemptedAt time.Time
+	Err         string
+
+	// Format is "png" or "jpeg", chosen per image rather than by policy: a flat
+	// logo is smaller as PNG, a photograph dramatically smaller as JPEG. Empty
+	// when no thumbnail was produced.
+	Format string
+
+	// AlphaFlattened is set when the source had transparency that had to be
+	// composited onto white to keep the thumbnail within its size budget.
+	//
+	// The interface must show this. A white logo on transparency, flattened
+	// onto white, becomes an empty rectangle — which on a timeline reads as
+	// "this version was blank", a lie about the user's own work.
+	AlphaFlattened bool
+}
+
+// PutPreview records a thumbnail attempt, replacing any earlier one.
+func PutPreview(ctx context.Context, db DBTX, p Preview) error {
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO previews
+			(file_hash, status, source, width, height, bytes, attempted_at, error,
+			 format, alpha_flattened)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(file_hash) DO UPDATE SET
+			status          = excluded.status,
+			source          = excluded.source,
+			width           = excluded.width,
+			height          = excluded.height,
+			bytes           = excluded.bytes,
+			attempted_at    = excluded.attempted_at,
+			error           = excluded.error,
+			format          = excluded.format,
+			alpha_flattened = excluded.alpha_flattened`,
+		p.FileHash, string(p.Status), p.Source, p.Width, p.Height, p.Bytes,
+		p.AttemptedAt.UnixNano(), p.Err, p.Format, boolToInt(p.AlphaFlattened))
+	if err != nil {
+		return fmt.Errorf("store: catat pratinjau %s: %w", shortHash(p.FileHash), err)
+	}
+	return nil
+}
+
+// PreviewByFileHash reads one recorded attempt.
+func PreviewByFileHash(ctx context.Context, db DBTX, fileHash string) (Preview, error) {
+	row := db.QueryRowContext(ctx, `
+		SELECT file_hash, status, source, width, height, bytes, attempted_at, error,
+		       format, alpha_flattened
+		FROM previews WHERE file_hash = ?`, fileHash)
+
+	p, err := scanPreview(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Preview{}, fmt.Errorf("%w: pratinjau %s", ErrNotFound, shortHash(fileHash))
+	}
+	return p, err
+}
+
+// PreviewsForAsset returns the preview attempt for every version of an asset,
+// oldest version first, so a timeline can be drawn in one query.
+//
+// Versions whose content has been thinned away are included: their thumbnail
+// outlives the content precisely so the timeline has something to show.
+func PreviewsForAsset(ctx context.Context, db DBTX, assetID int64) ([]Preview, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT p.file_hash, p.status, p.source, p.width, p.height, p.bytes,
+		       p.attempted_at, p.error, p.format, p.alpha_flattened
+		FROM versions v
+		JOIN previews p ON p.file_hash = v.file_hash
+		WHERE v.asset_id = ?
+		ORDER BY v.observed_at, v.id`, assetID)
+	if err != nil {
+		return nil, fmt.Errorf("store: baca pratinjau karya %d: %w", assetID, err)
+	}
+	defer rows.Close()
+
+	var out []Preview
+	for rows.Next() {
+		p, err := scanPreview(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: baca pratinjau karya %d: %w", assetID, err)
+	}
+	return out, nil
+}
+
+// FileHashesWithoutPreview returns content that has never been through the
+// preview generator, oldest version first.
+func FileHashesWithoutPreview(ctx context.Context, db DBTX, limit int) ([]string, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT DISTINCT v.file_hash
+		FROM versions v
+		LEFT JOIN previews p ON p.file_hash = v.file_hash
+		WHERE p.file_hash IS NULL
+		ORDER BY v.observed_at, v.id
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: cari isi tanpa pratinjau: %w", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, fmt.Errorf("store: baca hash: %w", err)
+		}
+		out = append(out, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: cari isi tanpa pratinjau: %w", err)
+	}
+	return out, nil
+}
+
+func scanPreview(s scanner) (Preview, error) {
+	var (
+		p              Preview
+		status         string
+		attemptedAt    int64
+		alphaFlattened int
+	)
+	err := s.Scan(&p.FileHash, &status, &p.Source, &p.Width, &p.Height, &p.Bytes,
+		&attemptedAt, &p.Err, &p.Format, &alphaFlattened)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Preview{}, err
+		}
+		return Preview{}, fmt.Errorf("store: baca pratinjau: %w", err)
+	}
+	p.Status = PreviewStatus(status)
+	p.AttemptedAt = time.Unix(0, attemptedAt)
+	p.AlphaFlattened = alphaFlattened == 1
+	return p, nil
+}

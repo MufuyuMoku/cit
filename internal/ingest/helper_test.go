@@ -1,7 +1,11 @@
 package ingest
 
 import (
+	"bytes"
 	"database/sql"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"sync"
@@ -263,4 +267,31 @@ type sizedBuffer struct{ b []byte }
 func (s *sizedBuffer) Write(p []byte) (int, error) {
 	s.b = append(s.b, p...)
 	return len(p), nil
+}
+
+// writePNG puts a real, decodable PNG on disk. The preview tests need content a
+// decoder will actually accept, not the pseudo-random bytes the debounce tests
+// use.
+func writePNG(t *testing.T, path string, w, h int) {
+	t.Helper()
+
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.SetRGBA(x, y, color.RGBA{
+				R: uint8(x * 255 / max(w-1, 1)),
+				G: uint8(y * 255 / max(h-1, 1)),
+				B: 0x80,
+				A: 0xff,
+			})
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatalf("tulis %s: %v", path, err)
+	}
 }

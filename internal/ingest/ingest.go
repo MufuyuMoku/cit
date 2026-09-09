@@ -25,6 +25,15 @@ type Vault interface {
 	Release(fileHash string) error
 }
 
+// PreviewMaker renders the thumbnail for a piece of content. Optional: with no
+// maker configured, versions are recorded without pictures.
+//
+// Anything it returns is advisory. A thumbnail that cannot be drawn is a
+// missing picture, never a missing version — see makePreview.
+type PreviewMaker interface {
+	Generate(ctx context.Context, fileHash, path string) (store.Preview, error)
+}
+
 // Defaults chosen for how design tools actually behave. A Photoshop save of a
 // large PSD can take several seconds and touches the file repeatedly; the quiet
 // period has to outlast that, or one Ctrl+S becomes five versions.
@@ -63,6 +72,8 @@ type Ingester struct {
 	pollInterval   time.Duration
 	verifyInterval time.Duration
 	now            func() time.Time
+
+	previews PreviewMaker
 
 	// checkOpenable is a field so tests can drive the operating-system answers
 	// that are otherwise impossible to provoke portably: a locked file on Linux,
@@ -137,6 +148,12 @@ func WithVerifyInterval(d time.Duration) Option {
 	return func(i *Ingester) { i.verifyInterval = d }
 }
 
+// WithPreviews attaches a thumbnail generator. Without one, versions are still
+// recorded; they simply have no picture.
+func WithPreviews(p PreviewMaker) Option {
+	return func(i *Ingester) { i.previews = p }
+}
+
 // Problem is a file ingest could not read and has stopped retrying.
 //
 // These are surfaced rather than swallowed. A file that quietly never reaches
@@ -201,6 +218,13 @@ type Result struct {
 	// Unreadable counts files that have exhausted their open attempts and are
 	// now listed by Problems.
 	Unreadable int
+	// PreviewsMade counts thumbnails generated this scan, successful or not —
+	// every one of them recorded an outcome.
+	PreviewsMade int
+	// PreviewsSkipped counts thumbnail attempts that could not even be
+	// recorded. The version is still on the timeline; only its picture is
+	// missing.
+	PreviewsSkipped int
 }
 
 // Scan walks roots once and records a version for every file that has settled
@@ -254,7 +278,7 @@ func (i *Ingester) Scan(ctx context.Context, roots ...string) (Result, error) {
 			continue
 		}
 
-		outcome, err := i.ingestFile(ctx, path, info, seen, now)
+		outcome, err := i.ingestFile(ctx, path, info, seen, now, &result)
 		if err != nil {
 			if errors.Is(err, errStillBusy) {
 				// Held open by its writer. Try again next scan rather than
@@ -469,6 +493,7 @@ func (i *Ingester) ingestFile(
 	info fs.FileInfo,
 	seen map[string]fs.FileInfo,
 	now time.Time,
+	res *Result,
 ) (outcome, error) {
 	// Ask the operating system whether anyone else still holds the file. On
 	// Windows that is a definitive answer and closes the half-written-export
@@ -558,7 +583,63 @@ func (i *Ingester) ingestFile(
 		}
 	}
 
+	// Draw the picture now, while the file is still on disk and has already
+	// been proven to match the hash we just recorded. Waiting until later would
+	// mean reading it again, and by then retention may have thinned the only
+	// copy of that content away.
+	i.makePreview(ctx, fileHash, path, res)
+
 	return result, nil
+}
+
+// makePreview renders the thumbnail for content that has just been recorded.
+//
+// Nothing it does can fail the ingest. The version is already committed and on
+// the timeline; a thumbnail that cannot be drawn — a corrupt psd, a missing
+// ffmpeg, a full disk — leaves that version without a picture and nothing else.
+// Losing a version because its picture could not be drawn would be a far worse
+// trade than showing a generic icon.
+func (i *Ingester) makePreview(ctx context.Context, fileHash, path string, res *Result) {
+	if i.previews == nil {
+		return
+	}
+
+	// Already drawn: two versions with identical content share one picture, and
+	// re-rendering it every scan would be waste.
+	if _, err := store.PreviewByFileHash(ctx, i.db, fileHash); err == nil {
+		return
+	} else if !errors.Is(err, store.ErrNotFound) {
+		res.PreviewsSkipped++
+		return
+	}
+
+	if err := i.generateSafely(ctx, fileHash, path); err != nil {
+		// Generate only returns an error when it could not even record the
+		// outcome. There is nothing useful to do about it here beyond counting
+		// it: the next scan will try again.
+		res.PreviewsSkipped++
+		return
+	}
+	res.PreviewsMade++
+}
+
+// generateSafely calls the thumbnail generator, surviving a panic inside it.
+//
+// The generator decodes hostile input — a deliberately malformed psd, a video
+// container built to break parsers — and its own defences could have a hole. A
+// panic there is a bug in drawing a picture; letting it unwind through here
+// would abort the whole scan and cost the user versions of files that had
+// nothing wrong with them.
+func (i *Ingester) generateSafely(ctx context.Context, fileHash, path string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("ingest: pembuat gambar kecil panic pada %s: %v",
+				filepath.Base(path), r)
+		}
+	}()
+
+	_, err = i.previews.Generate(ctx, fileHash, path)
+	return err
 }
 
 // record writes the catalogue rows for one settled file.

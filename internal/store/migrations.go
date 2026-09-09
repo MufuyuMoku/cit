@@ -145,4 +145,68 @@ var migrations = []migration{
 			`CREATE INDEX IF NOT EXISTS idx_observed_files_verified ON observed_files(last_verified_at)`,
 		},
 	},
+	{
+		version: 3,
+		name:    "tabel previews",
+		stmts: []string{
+			// One row per distinct piece of content, recording what came of trying
+			// to make a thumbnail of it. Keyed by file_hash rather than version id
+			// because two versions with byte-identical content are the same picture,
+			// and rendering it twice would be waste.
+			//
+			// A row exists even when there is no thumbnail. "We looked at this and
+			// there is nothing we can render" is information the timeline needs, and
+			// it stops the generator retrying an unrenderable file on every scan.
+			//
+			// The image itself is NOT in the vault. See the package comment on
+			// internal/preview for why, but in short: retention will one day discard
+			// the chunks of the original, and the thumbnail has to outlive that.
+			// Keeping it outside the vault means retention structurally cannot reach
+			// it, rather than being trusted to remember not to.
+			`CREATE TABLE IF NOT EXISTS previews (
+				file_hash    TEXT    PRIMARY KEY,
+
+				-- 'ok', 'unsupported' or 'failed'.
+				status       TEXT    NOT NULL CHECK (status IN ('ok', 'unsupported', 'failed')),
+
+				-- Which ladder rung produced it: 'image', 'kra', 'psd', 'video', or ''
+				-- when nothing did.
+				source       TEXT    NOT NULL DEFAULT '',
+
+				width        INTEGER NOT NULL DEFAULT 0,
+				height       INTEGER NOT NULL DEFAULT 0,
+				bytes        INTEGER NOT NULL DEFAULT 0,
+
+				attempted_at INTEGER NOT NULL,
+
+				-- Why it failed, in the user's language. Recorded rather than
+				-- thrown: a preview that cannot be made must never stop a file
+				-- being versioned.
+				error        TEXT    NOT NULL DEFAULT ''
+			) STRICT`,
+
+			`CREATE INDEX IF NOT EXISTS idx_previews_status ON previews(status)`,
+		},
+	},
+	{
+		version: 4,
+		name:    "previews.format dan previews.alpha_flattened",
+		stmts: []string{
+			// Which encoding the thumbnail is in: 'png' or 'jpeg'. It is not one or
+			// the other by policy — a flat logo is smaller as PNG than as JPEG, a
+			// photograph is dramatically smaller as JPEG, and the generator picks
+			// per image. Empty for rows that produced no thumbnail at all.
+			`ALTER TABLE previews ADD COLUMN format TEXT NOT NULL DEFAULT ''`,
+
+			// Set when the source had transparency that had to be flattened onto
+			// white to keep the thumbnail within its size budget.
+			//
+			// The interface needs this. A logo drawn in white on transparency,
+			// flattened onto white, becomes an empty rectangle — and an empty
+			// rectangle on the timeline reads as "this version was blank", which is
+			// a lie about the user's own work. Recording the flattening lets the
+			// interface mark it instead of showing a picture that misleads.
+			`ALTER TABLE previews ADD COLUMN alpha_flattened INTEGER NOT NULL DEFAULT 0`,
+		},
+	},
 }
