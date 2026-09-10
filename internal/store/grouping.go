@@ -178,20 +178,55 @@ func PreviewPHash(ctx context.Context, db DBTX, fileHash string) (string, error)
 // the moment it is renamed. Getting this wrong would strand a file's older
 // versions on the asset it came from, and the user would see a timeline with
 // entries missing.
-func MoveFileToAsset(ctx context.Context, db DBTX, path string, assetID int64, now time.Time) error {
-	if _, err := db.ExecContext(ctx,
-		`UPDATE observed_files SET asset_id = ? WHERE path = ?`, assetID, path); err != nil {
-		return fmt.Errorf("store: pindahkan jalur %s ke karya %d: %w", path, assetID, err)
+// The returned count is how many tracked paths actually moved: 1 normally, 0
+// when there is no row at this path. Zero is not an error — a path can vanish
+// between a caller deciding to move it and the move happening — but it is not
+// nothing either, and a caller that reports a move it did not make is lying to
+// the user. Callers must not assume.
+func MoveFileToAsset(ctx context.Context, db DBTX, path string, assetID int64, now time.Time) (int64, error) {
+	res, err := db.ExecContext(ctx,
+		`UPDATE observed_files SET asset_id = ? WHERE path = ?`, assetID, path)
+	if err != nil {
+		return 0, fmt.Errorf("store: pindahkan jalur %s ke karya %d: %w", path, assetID, err)
+	}
+	moved, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: hitung jalur yang pindah: %w", err)
 	}
 	if _, err := db.ExecContext(ctx,
 		`UPDATE versions SET asset_id = ? WHERE file_key = ?`, assetID, path); err != nil {
-		return fmt.Errorf("store: pindahkan versi %s ke karya %d: %w", path, assetID, err)
+		return 0, fmt.Errorf("store: pindahkan versi %s ke karya %d: %w", path, assetID, err)
 	}
 	if _, err := db.ExecContext(ctx,
 		`UPDATE assets SET updated_at = ? WHERE id = ?`, now.UnixNano(), assetID); err != nil {
-		return fmt.Errorf("store: perbarui karya %d: %w", assetID, err)
+		return 0, fmt.Errorf("store: perbarui karya %d: %w", assetID, err)
 	}
-	return nil
+	return moved, nil
+}
+
+// --- catalogue generation ---------------------------------------------------
+
+// GroupingGeneration returns the catalogue generation counter.
+//
+// It moves whenever observed_files, versions or grouping_decisions change,
+// kept by database triggers rather than by any caller. Grouping reads it before
+// it starts scoring and checks it again inside its write transaction: if the
+// number has moved, the work it did was based on a catalogue that no longer
+// exists and must be thrown away rather than written.
+//
+// See migration 7 for why this is a database-side counter and not a field
+// somewhere in Go.
+func GroupingGeneration(ctx context.Context, db DBTX) (int64, error) {
+	var value int64
+	err := db.QueryRowContext(ctx,
+		`SELECT value FROM grouping_generation WHERE id = 1`).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("store: baris generasi katalog hilang; basis data rusak")
+	}
+	if err != nil {
+		return 0, fmt.Errorf("store: baca generasi katalog: %w", err)
+	}
+	return value, nil
 }
 
 // RenameVersionFileKey follows a file through a rename so its versions stay

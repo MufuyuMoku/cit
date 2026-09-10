@@ -8,6 +8,7 @@ import (
 	"io"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/MufuyuMoku/cit/internal/store"
@@ -24,6 +25,28 @@ type Grouper struct {
 	thumbs Thumbnails
 	w      Weights
 	now    func() time.Time
+
+	// regroupMu admits one Regroup at a time.
+	//
+	// It guards Regroup and nothing else. Two passes in flight together would
+	// each hold a clustering computed from a different catalogue and take turns
+	// overwriting the other's conclusion, with whichever committed last
+	// deciding. Split and Merge are deliberately not covered: they are single
+	// short transactions, already serialised by the one database connection,
+	// and making them wait behind a forty-second regrouping would turn a click
+	// into a hang — worse, a Split invoked from inside a regrouping would
+	// deadlock against it.
+	regroupMu sync.Mutex
+
+	// beforeApply runs after the scoring sweep and before the write
+	// transaction, for tests that need to change the catalogue in exactly that
+	// window. Never set in production.
+	beforeApply func()
+
+	// sweepTick runs once per row of the scoring sweep, so a test can cancel at
+	// a known point inside it instead of sleeping and hoping. Never set in
+	// production.
+	sweepTick func(row int)
 }
 
 // Option configures a Grouper.
@@ -54,6 +77,14 @@ func New(db *sql.DB, thumbs Thumbnails, opts ...Option) *Grouper {
 	return g
 }
 
+// ErrStale means the catalogue changed while a regrouping pass was thinking, so
+// the pass threw its conclusions away rather than writing them.
+//
+// This is a normal outcome, not a malfunction: a save landing or a user
+// splitting two files by hand during a long pass is exactly what should
+// invalidate it. Callers should try again rather than treat it as a failure.
+var ErrStale = errors.New("grouping: katalog berubah saat pengelompokan berjalan, hasilnya dibuang")
+
 // Result reports what one regrouping pass did.
 type Result struct {
 	// Files considered.
@@ -77,22 +108,44 @@ type Result struct {
 // user can split anything back apart with one call, and that split is then
 // permanent.
 func (g *Grouper) Regroup(ctx context.Context) (Result, error) {
+	g.regroupMu.Lock()
+	defer g.regroupMu.Unlock()
+
 	var result Result
 
+	// Hashing thumbnails writes to previews and can take a while, so it happens
+	// before the generation is recorded. Doing it afterwards would mean a long
+	// hashing run regularly outlived its own snapshot and every pass aborted as
+	// stale without ever converging. Its own read of the file list is cheap
+	// next to the scoring that follows.
 	files, err := store.AllObservedFiles(ctx, g.db)
 	if err != nil {
 		return result, err
 	}
-	result.Files = len(files)
 	if len(files) == 0 {
 		return result, nil
 	}
-
 	hashed, err := g.ensureHashes(ctx, files)
 	if err != nil {
 		return result, err
 	}
 	result.HashesComputed = hashed
+
+	// From here on the catalogue is a snapshot. The generation is read first,
+	// before anything that depends on it: read the other way round, a change
+	// landing between the rows and the counter would look unchanged at write
+	// time and stale conclusions would be written. Reading it first can only
+	// ever abort a pass that was in fact still valid, which costs a repeat.
+	generation, err := store.GroupingGeneration(ctx, g.db)
+	if err != nil {
+		return result, err
+	}
+
+	files, err = store.AllObservedFiles(ctx, g.db)
+	if err != nil {
+		return result, err
+	}
+	result.Files = len(files)
 
 	candidates, err := g.candidates(ctx, files)
 	if err != nil {
@@ -104,11 +157,18 @@ func (g *Grouper) Regroup(ctx context.Context) (Result, error) {
 		return result, err
 	}
 
-	clusters, refused := g.cluster(candidates, decisions)
+	clusters, refused, err := g.cluster(ctx, candidates, decisions)
+	if err != nil {
+		return result, err
+	}
 	result.HonouredApart = refused
 	result.Groups = len(clusters)
 
-	moved, removed, err := g.apply(ctx, candidates, clusters)
+	if g.beforeApply != nil {
+		g.beforeApply()
+	}
+
+	moved, removed, err := g.apply(ctx, candidates, clusters, generation)
 	if err != nil {
 		return result, err
 	}
@@ -243,7 +303,7 @@ func (s decisionSet) isTogether(a, b string) bool { return s.together[pairKey(a,
 //
 // Pairs are considered strongest first, so the most confident guesses claim
 // their partners before weaker ones get a say.
-func (g *Grouper) cluster(cands []candidate, decisions decisionSet) ([][]int, int) {
+func (g *Grouper) cluster(ctx context.Context, cands []candidate, decisions decisionSet) ([][]int, int, error) {
 	uf := newUnionFind(len(cands))
 	refused := 0
 
@@ -252,6 +312,9 @@ func (g *Grouper) cluster(cands []candidate, decisions decisionSet) ([][]int, in
 	// that only applies transitively, where the user has contradicted
 	// themselves and the more specific instruction wins.
 	for i := range cands {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
 		for j := i + 1; j < len(cands); j++ {
 			if decisions.isTogether(cands[i].path, cands[j].path) {
 				uf.union(i, j)
@@ -265,6 +328,18 @@ func (g *Grouper) cluster(cands []candidate, decisions decisionSet) ([][]int, in
 	}
 	var pairs []scored
 	for i := range cands {
+		// Every pair is scored against every other, which on ten thousand
+		// tracked files is fifty million comparisons and the better part of a
+		// minute. Cancellation is checked once per row rather than per pair:
+		// that is ten thousand cheap checks instead of fifty million, and it
+		// still bounds the delay to one row's worth of work. Without it,
+		// closing the window during a pass would appear to hang.
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
+		if g.sweepTick != nil {
+			g.sweepTick(i)
+		}
 		for j := i + 1; j < len(cands); j++ {
 			if decisions.isTogether(cands[i].path, cands[j].path) {
 				continue // already joined
@@ -277,7 +352,14 @@ func (g *Grouper) cluster(cands []candidate, decisions decisionSet) ([][]int, in
 	}
 	sort.SliceStable(pairs, func(a, b int) bool { return pairs[a].s > pairs[b].s })
 
-	for _, p := range pairs {
+	for n, p := range pairs {
+		// crossesApart walks both clusters, so this loop is not cheap either
+		// once the groups get large.
+		if n%1024 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, 0, err
+			}
+		}
 		if uf.find(p.i) == uf.find(p.j) {
 			continue
 		}
@@ -292,7 +374,7 @@ func (g *Grouper) cluster(cands []candidate, decisions decisionSet) ([][]int, in
 		uf.union(p.i, p.j)
 	}
 
-	return uf.clusters(), refused
+	return uf.clusters(), refused, nil
 }
 
 // crossesApart reports whether joining these two clusters would put a manually
@@ -310,8 +392,22 @@ func crossesApart(uf *unionFind, cands []candidate, decisions decisionSet, i, j 
 	return false
 }
 
-// apply writes the clustering to the database.
-func (g *Grouper) apply(ctx context.Context, cands []candidate, clusters [][]int) (moved, removed int, err error) {
+// apply writes the clustering to the database, unless the catalogue has moved
+// since generation was taken.
+//
+// The check is the whole point of the function's shape. Scoring happens outside
+// any transaction because it takes far too long to hold one open, which leaves a
+// window where the catalogue can change underneath a conclusion already drawn.
+// A manual split landing in that window used to be undone by arithmetic older
+// than the decision itself. Now the generation is re-read inside the
+// transaction that would do the writing, so either nothing has changed and the
+// writes are valid, or something has and nothing is written at all.
+func (g *Grouper) apply(
+	ctx context.Context,
+	cands []candidate,
+	clusters [][]int,
+	generation int64,
+) (moved, removed int, err error) {
 	now := g.now()
 
 	tx, err := g.db.BeginTx(ctx, nil)
@@ -319,6 +415,16 @@ func (g *Grouper) apply(ctx context.Context, cands []candidate, clusters [][]int
 		return 0, 0, fmt.Errorf("grouping: mulai transaksi: %w", err)
 	}
 	defer tx.Rollback()
+
+	// Inside the transaction, before any write: read through the same handle
+	// that will do the writing, so there is no gap left to lose.
+	current, err := store.GroupingGeneration(ctx, tx)
+	if err != nil {
+		return 0, 0, err
+	}
+	if current != generation {
+		return 0, 0, fmt.Errorf("%w (generasi %d -> %d)", ErrStale, generation, current)
+	}
 
 	touched := map[int64]bool{}
 
@@ -338,10 +444,15 @@ func (g *Grouper) apply(ctx context.Context, cands []candidate, clusters [][]int
 			if c.assetID == canonical {
 				continue
 			}
-			if err := store.MoveFileToAsset(ctx, tx, c.path, canonical, now); err != nil {
+			n, err := store.MoveFileToAsset(ctx, tx, c.path, canonical, now)
+			if err != nil {
 				return 0, 0, err
 			}
-			moved++
+			// Count what actually moved. The generation check above means a
+			// vanished path should be impossible here, but a counter that
+			// reports moves it did not make is how a wrong number reaches the
+			// user looking authoritative.
+			moved += int(n)
 		}
 	}
 
@@ -404,7 +515,7 @@ func (g *Grouper) Split(ctx context.Context, keepPath, movePath string) error {
 		if err != nil {
 			return err
 		}
-		if err := store.MoveFileToAsset(ctx, tx, movePath, newAsset, now); err != nil {
+		if _, err := store.MoveFileToAsset(ctx, tx, movePath, newAsset, now); err != nil {
 			return err
 		}
 		if _, err := store.DeleteEmptyAsset(ctx, tx, keep.AssetID); err != nil {
@@ -451,7 +562,7 @@ func (g *Grouper) Merge(ctx context.Context, pathA, pathB string) error {
 			canonical, absorbed = absorbed, canonical
 			movePath = pathA
 		}
-		if err := store.MoveFileToAsset(ctx, tx, movePath, canonical, now); err != nil {
+		if _, err := store.MoveFileToAsset(ctx, tx, movePath, canonical, now); err != nil {
 			return err
 		}
 		if _, err := store.DeleteEmptyAsset(ctx, tx, absorbed); err != nil {

@@ -294,3 +294,157 @@ func TestRenameKeepsFileKeyNonEmpty(t *testing.T) {
 		t.Errorf("source_path = %q; catatan sejarah tidak boleh berubah", versions[0].SourcePath)
 	}
 }
+
+// --- migration 7: the catalogue generation counter ---------------------------
+
+// An existing database gains the counter with a usable starting value, and the
+// triggers take effect over rows that were already there.
+func TestMigrationSevenAddsGenerationToAPopulatedDatabase(t *testing.T) {
+	db := rawDB(t)
+	ctx := t.Context()
+
+	// Stop one short of the counter, then fill the database.
+	if err := migrateWith(ctx, db, migrations[:6]); err != nil {
+		t.Fatalf("migrasi ke versi 6: %v", err)
+	}
+	assetID, err := CreateAsset(ctx, db, "poster.psd", testTime)
+	if err != nil {
+		t.Fatalf("CreateAsset: %v", err)
+	}
+	if _, err := AddVersion(ctx, db, Version{
+		AssetID: assetID, FileHash: "h1", Size: 10,
+		ObservedAt: testTime, ModifiedAt: testTime,
+		SourcePath: "/kerja/poster.psd", FileKey: "/kerja/poster.psd",
+	}); err != nil {
+		t.Fatalf("AddVersion: %v", err)
+	}
+	if err := PutObservedFile(ctx, db, ObservedFile{
+		Path: "/kerja/poster.psd", AssetID: assetID, LastHash: "h1", LastSize: 10,
+		LastModifiedAt: testTime, LastSeenAt: testTime, LastVerifiedAt: testTime,
+	}); err != nil {
+		t.Fatalf("PutObservedFile: %v", err)
+	}
+	if err := PutGroupingDecision(ctx, db, "/kerja/a", "/kerja/b", Apart, testTime); err != nil {
+		t.Fatalf("PutGroupingDecision: %v", err)
+	}
+
+	// There is no counter yet.
+	if _, err := GroupingGeneration(ctx, db); err == nil {
+		t.Fatal("generasi terbaca sebelum migrasi 7 ada")
+	}
+
+	if err := migrateWith(ctx, db, migrations); err != nil {
+		t.Fatalf("migrasi ke versi terakhir: %v", err)
+	}
+
+	start, err := GroupingGeneration(ctx, db)
+	if err != nil {
+		t.Fatalf("GroupingGeneration: %v", err)
+	}
+	if start < 1 {
+		t.Errorf("generasi awal = %d, mau minimal 1 supaya 0 hanya bisa berarti "+
+			"\"belum pernah dibaca\"", start)
+	}
+
+	// The rows that predate the counter are covered by the triggers all the same.
+	changes := []struct {
+		what string
+		do   func() error
+	}{
+		{"versi baru di karya lama", func() error {
+			_, err := AddVersion(ctx, db, Version{
+				AssetID: assetID, FileHash: "h2", Size: 20,
+				ObservedAt: testTime, ModifiedAt: testTime,
+				SourcePath: "/kerja/poster.psd", FileKey: "/kerja/poster.psd",
+			})
+			return err
+		}},
+		{"pindahkan jalur lama", func() error {
+			_, err := MoveFileToAsset(ctx, db, "/kerja/poster.psd", assetID, testTime)
+			return err
+		}},
+		{"ubah keputusan lama", func() error {
+			return PutGroupingDecision(ctx, db, "/kerja/a", "/kerja/b", Together, testTime)
+		}},
+	}
+	for _, c := range changes {
+		was, err := GroupingGeneration(ctx, db)
+		if err != nil {
+			t.Fatalf("GroupingGeneration: %v", err)
+		}
+		if err := c.do(); err != nil {
+			t.Fatalf("%s: %v", c.what, err)
+		}
+		now, err := GroupingGeneration(ctx, db)
+		if err != nil {
+			t.Fatalf("GroupingGeneration: %v", err)
+		}
+		if now <= was {
+			t.Errorf("%s: generasi tetap %d; baris yang lebih tua dari pemicunya "+
+				"tidak ikut terjaga", c.what, now)
+		}
+	}
+
+	// And everything that was there is still there.
+	if n, err := CountVersions(ctx, db); err != nil || n != 2 {
+		t.Errorf("jumlah versi = %d (%v), mau 2", n, err)
+	}
+	if got, err := GroupingDecisionFor(ctx, db, "/kerja/b", "/kerja/a"); err != nil {
+		t.Errorf("keputusan hilang: %v", err)
+	} else if got.Decision != Together {
+		t.Errorf("keputusan = %q, mau %q", got.Decision, Together)
+	}
+}
+
+// Every write inside one transaction is one change as far as a reader outside it
+// is concerned, and the counter must reflect that: a reader never sees a
+// half-applied rename.
+func TestGenerationIsNotVisibleUntilTheTransactionCommits(t *testing.T) {
+	db := rawDB(t)
+	ctx := t.Context()
+	if err := migrateWith(ctx, db, migrations); err != nil {
+		t.Fatalf("migrasi: %v", err)
+	}
+
+	assetID, err := CreateAsset(ctx, db, "poster.psd", testTime)
+	if err != nil {
+		t.Fatalf("CreateAsset: %v", err)
+	}
+
+	before, err := GroupingGeneration(ctx, db)
+	if err != nil {
+		t.Fatalf("GroupingGeneration: %v", err)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := PutObservedFile(ctx, tx, ObservedFile{
+		Path: "/kerja/poster.psd", AssetID: assetID, LastHash: "h1", LastSize: 10,
+		LastModifiedAt: testTime, LastSeenAt: testTime, LastVerifiedAt: testTime,
+	}); err != nil {
+		t.Fatalf("PutObservedFile: %v", err)
+	}
+	// Inside the transaction the counter has already moved.
+	inside, err := GroupingGeneration(ctx, tx)
+	if err != nil {
+		t.Fatalf("GroupingGeneration dalam transaksi: %v", err)
+	}
+	if inside <= before {
+		t.Errorf("generasi di dalam transaksi = %d, mau > %d", inside, before)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+
+	// Rolled back, so it never happened.
+	after, err := GroupingGeneration(ctx, db)
+	if err != nil {
+		t.Fatalf("GroupingGeneration: %v", err)
+	}
+	if after != before {
+		t.Errorf("generasi %d -> %d setelah rollback; perubahan yang dibatalkan "+
+			"tidak boleh membatalkan pengelompokan", before, after)
+	}
+}

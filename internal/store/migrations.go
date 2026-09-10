@@ -294,4 +294,96 @@ var migrations = []migration{
 			END`,
 		},
 	},
+	{
+		version: 7,
+		name:    "penghitung generasi katalog untuk pengelompokan",
+		stmts: []string{
+			// A counter that moves whenever anything grouping reads has changed.
+			//
+			// Grouping scores every pair of files against every other, which on a
+			// ten-thousand-file archive is forty seconds of pure arithmetic. It
+			// cannot hold a transaction open for that long, so it reads, thinks,
+			// and then writes — and in the gap between reading and writing the
+			// catalogue can move under it.
+			//
+			// That gap had teeth. A user who split two files by hand while a
+			// regrouping was in flight would have their decision silently undone
+			// by arithmetic that predated it: the row in grouping_decisions stayed,
+			// but the two files were merged back together. The golden rule of this
+			// project is that the human decides, and a guess that overwrites a
+			// decision breaks it outright.
+			//
+			// So the write phase re-reads this counter and refuses to write if it
+			// has moved. What makes that trustworthy is that the counter is kept by
+			// the database, not by the callers: any future code that touches
+			// observed_files, versions or grouping_decisions bumps it without
+			// knowing this mechanism exists. Same reasoning as
+			// versions_are_permanent — an invariant this expensive to violate is
+			// not left to everyone remembering.
+			//
+			// One row, forever. The CHECK makes a second one impossible.
+			`CREATE TABLE IF NOT EXISTS grouping_generation (
+				id    INTEGER PRIMARY KEY CHECK (id = 1),
+				value INTEGER NOT NULL
+			) STRICT`,
+
+			// Starts at 1, so a recorded generation of 0 can only mean "never
+			// read" and can never accidentally match a real one.
+			`INSERT OR IGNORE INTO grouping_generation (id, value) VALUES (1, 1)`,
+
+			// observed_files: which files exist and which asset each belongs to.
+			`CREATE TRIGGER IF NOT EXISTS generation_observed_files_insert
+			AFTER INSERT ON observed_files
+			BEGIN
+				UPDATE grouping_generation SET value = value + 1 WHERE id = 1;
+			END`,
+
+			`CREATE TRIGGER IF NOT EXISTS generation_observed_files_update
+			AFTER UPDATE ON observed_files
+			BEGIN
+				UPDATE grouping_generation SET value = value + 1 WHERE id = 1;
+			END`,
+
+			`CREATE TRIGGER IF NOT EXISTS generation_observed_files_delete
+			AFTER DELETE ON observed_files
+			BEGIN
+				UPDATE grouping_generation SET value = value + 1 WHERE id = 1;
+			END`,
+
+			// versions: which asset each recorded save hangs off, and the file_key
+			// that grouping moves them by. There is no delete trigger because
+			// versions_are_permanent means a delete never completes.
+			`CREATE TRIGGER IF NOT EXISTS generation_versions_insert
+			AFTER INSERT ON versions
+			BEGIN
+				UPDATE grouping_generation SET value = value + 1 WHERE id = 1;
+			END`,
+
+			`CREATE TRIGGER IF NOT EXISTS generation_versions_update
+			AFTER UPDATE ON versions
+			BEGIN
+				UPDATE grouping_generation SET value = value + 1 WHERE id = 1;
+			END`,
+
+			// grouping_decisions: the judgements that outrank every score. This is
+			// the one the whole mechanism exists for.
+			`CREATE TRIGGER IF NOT EXISTS generation_decisions_insert
+			AFTER INSERT ON grouping_decisions
+			BEGIN
+				UPDATE grouping_generation SET value = value + 1 WHERE id = 1;
+			END`,
+
+			`CREATE TRIGGER IF NOT EXISTS generation_decisions_update
+			AFTER UPDATE ON grouping_decisions
+			BEGIN
+				UPDATE grouping_generation SET value = value + 1 WHERE id = 1;
+			END`,
+
+			`CREATE TRIGGER IF NOT EXISTS generation_decisions_delete
+			AFTER DELETE ON grouping_decisions
+			BEGIN
+				UPDATE grouping_generation SET value = value + 1 WHERE id = 1;
+			END`,
+		},
+	},
 }

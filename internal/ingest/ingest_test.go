@@ -582,3 +582,88 @@ func TestLongExportWithAPauseLongerThanTheQuietPeriod(t *testing.T) {
 	versions := f.versionsOf(f.assetIDFor("ekspor.mp4"))
 	f.requireRestores(versions[0], p)
 }
+
+// --- the after-scan hook ----------------------------------------------------
+
+// Grouping runs beside ingesting rather than inside it, and this hook is the
+// only thing connecting the two. It has to say, truthfully, whether a scan left
+// the catalogue different from how it found it.
+func TestAfterScanReportsWhetherTheCatalogueChanged(t *testing.T) {
+	var changed []bool
+	f := newFixture(t, WithAfterScan(func(_ context.Context, c bool) {
+		changed = append(changed, c)
+	}))
+
+	f.write("poster.psd", 2048, 1)
+
+	// First sighting: the file has not settled, so nothing is recorded.
+	f.scan()
+	if len(changed) != 1 || changed[0] {
+		t.Fatalf("setelah penampakan pertama: %v, mau [false]", changed)
+	}
+
+	// Settled, so a version lands.
+	f.clock.Advance(testQuietPeriod + time.Second)
+	f.scan()
+	if got := changed[len(changed)-1]; !got {
+		t.Error("pemindaian yang mencatat versi baru melaporkan tidak ada perubahan")
+	}
+
+	// Nothing has moved since.
+	before := len(changed)
+	f.scan()
+	if len(changed) != before+1 {
+		t.Fatalf("kait tidak dipanggil: %d -> %d", before, len(changed))
+	}
+	if changed[len(changed)-1] {
+		t.Error("pemindaian tanpa perubahan melaporkan ada perubahan")
+	}
+
+	// A second save is a change again.
+	f.write("poster.psd", 4096, 2)
+	f.settle()
+	if got := changed[len(changed)-1]; !got {
+		t.Error("penyimpanan kedua tidak dilaporkan sebagai perubahan")
+	}
+}
+
+// A scan that fails half way has not settled anything, so it must not tell
+// grouping the catalogue is quiet.
+func TestAfterScanIsNotCalledWhenTheScanFails(t *testing.T) {
+	calls := 0
+	f := newFixture(t, WithAfterScan(func(context.Context, bool) { calls++ }))
+
+	f.write("poster.psd", 1024, 3)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := f.ing.Scan(ctx, f.watch); err == nil {
+		t.Fatal("pemindaian dengan ctx yang sudah dibatalkan berhasil")
+	}
+	if calls != 0 {
+		t.Errorf("kait dipanggil %d kali setelah pemindaian gagal; mau 0", calls)
+	}
+}
+
+func TestChangedCatalogue(t *testing.T) {
+	cases := []struct {
+		what string
+		r    Result
+		want bool
+	}{
+		{"kosong", Result{}, false},
+		{"versi baru", Result{NewVersions: 1}, true},
+		{"karya baru", Result{NewAssets: 1}, true},
+		{"ganti nama", Result{Renamed: 1}, true},
+		{"berkas hilang", Result{Vanished: 1}, true},
+		{"hanya menunggu", Result{Waiting: 3, Settled: 2}, false},
+		{"hanya verifikasi", Result{Verified: 4}, false},
+		{"hanya pratinjau", Result{PreviewsMade: 2, PreviewsSkipped: 1}, false},
+		{"hanya tak terbaca", Result{Unreadable: 1}, false},
+	}
+	for _, tc := range cases {
+		if got := tc.r.ChangedCatalogue(); got != tc.want {
+			t.Errorf("%s: ChangedCatalogue() = %v, mau %v", tc.what, got, tc.want)
+		}
+	}
+}

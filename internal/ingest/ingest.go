@@ -96,6 +96,11 @@ type Ingester struct {
 	// problems holds paths that have given up, so a caller can show them.
 	problems map[string]Problem
 
+	// afterScan, when set, is called at the end of every scan with whether that
+	// scan changed the catalogue. It is how grouping learns when to run without
+	// ingest having to know that grouping exists.
+	afterScan func(ctx context.Context, changed bool)
+
 	// vanishedSince records when a tracked path was first found missing.
 	//
 	// A path that disappears is not forgotten straight away. Half of what looks
@@ -135,6 +140,16 @@ func WithClock(now func() time.Time) Option {
 // Zero disables scaling, leaving the flat quiet period.
 func WithQuietScale(bytesPerSecond int64) Option {
 	return func(i *Ingester) { i.quietScale = bytesPerSecond }
+}
+
+// WithAfterScan registers a hook called at the end of every scan, told whether
+// that scan changed anything in the catalogue.
+//
+// Deliberately a bool and not the Result: ingest must not grow a dependency on
+// whatever consumes this. Grouping is the intended consumer and is wired up in
+// cmd, so neither package imports the other.
+func WithAfterScan(fn func(ctx context.Context, changed bool)) Option {
+	return func(i *Ingester) { i.afterScan = fn }
 }
 
 // WithMaxQuietPeriod caps how far size scaling may stretch the wait.
@@ -227,6 +242,16 @@ type Result struct {
 	PreviewsSkipped int
 }
 
+// ChangedCatalogue reports whether this scan altered anything grouping looks at:
+// which files exist, and which asset each belongs to.
+//
+// Preview counts are excluded on purpose. A thumbnail appearing does give
+// grouping a new perceptual hash to work with, but it arrives alongside the
+// version that prompted it, which is already counted here.
+func (r Result) ChangedCatalogue() bool {
+	return r.NewVersions > 0 || r.NewAssets > 0 || r.Renamed > 0 || r.Vanished > 0
+}
+
 // Scan walks roots once and records a version for every file that has settled
 // since the last scan.
 //
@@ -317,6 +342,12 @@ func (i *Ingester) Scan(ctx context.Context, roots ...string) (Result, error) {
 		return result, err
 	}
 	result.Vanished = vanished
+
+	// Last thing, and only on the way out cleanly: a scan that failed half way
+	// has no business telling anyone the catalogue has settled.
+	if i.afterScan != nil {
+		i.afterScan(ctx, result.ChangedCatalogue())
+	}
 
 	return result, nil
 }
