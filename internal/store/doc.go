@@ -10,9 +10,16 @@
 // work), versions (one per observed save), observed_files (the live view of the
 // watched folders, one row per tracked path currently on disk), previews (what
 // came of trying to draw a thumbnail for a piece of content, plus its perceptual
-// hash), grouping_decisions (the judgements the user made by hand), and
+// hash), grouping_decisions (the judgements the user made by hand),
 // grouping_generation (a counter that moves whenever anything grouping reads has
-// changed).
+// changed), and watched_folders (the folders the user pointed CIT at).
+//
+// watched_folders is the one row the user typed rather than the system observed.
+// It lives here rather than in a settings file because there is already exactly
+// one place holding this application's state, and a second one would be a second
+// thing to keep consistent, back up and migrate. The location of the database
+// itself obviously cannot live here; that is derived from the platform's data
+// directory in cmd/paths.go.
 //
 // Unlike versions, observed_files rows are mutable and disposable: they describe
 // the present, not the history.

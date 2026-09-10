@@ -386,4 +386,27 @@ var migrations = []migration{
 			END`,
 		},
 	},
+	{
+		version: 8,
+		name:    "folder yang diawasi",
+		stmts: []string{
+			// The folders the user pointed CIT at, so the choice survives a
+			// restart.
+			//
+			// In the database rather than a settings file beside it: there is
+			// already exactly one place that holds this application's state, and
+			// a second one would be a second thing to keep consistent, back up,
+			// and migrate. The database location itself cannot live here, for
+			// obvious reasons — that one is derived from the platform's data
+			// directory, see cmd/paths.go.
+			//
+			// added_at is kept for display order: the list should read in the
+			// order the user built it, not in whatever order paths happen to
+			// sort.
+			`CREATE TABLE IF NOT EXISTS watched_folders (
+				path     TEXT    PRIMARY KEY,
+				added_at INTEGER NOT NULL
+			) STRICT`,
+		},
+	},
 }

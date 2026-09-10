@@ -99,6 +99,17 @@ jobs:
             libgtk-3-dev \
             libwebkit2gtk-4.1-dev
 
+      # The application layer in ./cmd cannot be tested in the job above: it
+      # imports Wails, which forces cgo on macOS and Linux, and that job exists
+      # to prove cgo stays out. On Windows Wails needs no cgo, so this is where
+      # ./cmd gets tested -- and it still runs under CGO_ENABLED=0, so the rule
+      # holds here too.
+      - name: go test ./cmd
+        if: runner.os == 'Windows'
+        env:
+          CGO_ENABLED: '0'
+        run: go test -count=1 ./cmd/...
+
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
 

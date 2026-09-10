@@ -620,3 +620,98 @@ func (f *fixture) requireSnapshot(want catalogueState, what string) {
 		}
 	}
 }
+
+// --- detaching a file from a work -------------------------------------------
+
+// Detach is what the interface's "pisahkan dari karya ini" calls, and it differs
+// from Split in the way that matters: a file pulled out of an asset holding
+// several others must not be draggable back by whichever of its former siblings
+// it still resembles.
+func TestDetachRecordsADecisionAgainstEverySibling(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+
+	// Seven saves of one poster, which group into a single work.
+	poster := []string{
+		f.addFile("poster-kampus.psd", baseTime, artwork(3)),
+		f.addFile("poster kampus final.psd", baseTime.Add(20*time.Minute), nearlyIdentical(3)),
+		f.addFile("poster_kampus_fix.psd", baseTime.Add(40*time.Minute), artwork(3)),
+		f.addFile("poster kampus revisi 3.psd", baseTime.Add(time.Hour), nearlyIdentical(3)),
+		f.addFile("Poster Kampus FINAL ASLI.psd", baseTime.Add(90*time.Minute), artwork(3)),
+		f.addFile("poster_kampus_v2 (1).psd", baseTime.Add(2*time.Hour), nearlyIdentical(3)),
+		f.addFile("poster-kampus-20260909.psd", baseTime.Add(150*time.Minute), artwork(3)),
+	}
+	f.regroup()
+	f.requireSameAsset(poster...)
+
+	odd := poster[3]
+	if err := f.g.Detach(ctx, odd); err != nil {
+		t.Fatalf("Detach: %v", err)
+	}
+
+	// Out on its own, and the rest untouched.
+	for _, p := range poster {
+		if p == odd {
+			continue
+		}
+		f.requireDifferentAssets(odd, p)
+	}
+	f.requireSameAsset(append([]string{}, poster[:3]...)...)
+
+	// A decision exists against every former sibling, not just one.
+	for _, p := range poster {
+		if p == odd {
+			continue
+		}
+		d, err := store.GroupingDecisionFor(ctx, f.db, odd, p)
+		if err != nil {
+			t.Errorf("tidak ada keputusan antara %s dan %s: %v",
+				filepath.Base(odd), filepath.Base(p), err)
+			continue
+		}
+		if d.Decision != store.Apart {
+			t.Errorf("keputusan %s vs %s = %q, mau %q",
+				filepath.Base(odd), filepath.Base(p), d.Decision, store.Apart)
+		}
+	}
+
+	// And it stays out across ten further passes.
+	for i := 0; i < 10; i++ {
+		f.regroup()
+	}
+	for _, p := range poster {
+		if p == odd {
+			continue
+		}
+		f.requireDifferentAssets(odd, p)
+	}
+	f.requireVersionsFollow(poster...)
+}
+
+// Detaching a file that is already alone changes nothing rather than churning
+// asset ids or recording a decision against nobody.
+func TestDetachOnAFileThatIsAlreadyAloneDoesNothing(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+
+	only := f.addFile("poster.psd", baseTime, artwork(3))
+	before := f.snapshot()
+
+	if err := f.g.Detach(ctx, only); err != nil {
+		t.Fatalf("Detach: %v", err)
+	}
+	f.requireSnapshot(before, "memisahkan berkas yang sudah sendiri")
+
+	if _, err := store.AllGroupingDecisions(ctx, f.db); err != nil {
+		t.Fatalf("AllGroupingDecisions: %v", err)
+	}
+}
+
+func TestDetachOnAnUnknownPathIsRefused(t *testing.T) {
+	f := newFixture(t)
+
+	err := f.g.Detach(t.Context(), f.path("tidak-ada.psd"))
+	if !errors.Is(err, ErrUnknownPath) {
+		t.Errorf("Detach jalur tak dikenal = %v, mau ErrUnknownPath", err)
+	}
+}

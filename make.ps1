@@ -3,7 +3,7 @@
 # Mirrors the Makefile exactly.
 #
 #   .\make.ps1 dev     - jalankan aplikasi dengan hot reload
-#   .\make.ps1 test    - go vet + go test lapis inti (./internal/...)
+#   .\make.ps1 test    - go vet + go test (./internal/... dan ./cmd/...)
 #   .\make.ps1 build   - bangun binari untuk platform saat ini (build/bin/)
 #   .\make.ps1 clean   - hapus keluaran build
 
@@ -54,9 +54,13 @@ switch ($Task) {
         Invoke-Step 'wails' @('dev', '-ldflags', $ldflags)
     }
     'test' {
-        # Only the pure-Go layers; see the Makefile for why.
         Invoke-Step 'go' @('vet', './internal/...')
         Invoke-Step 'go' @('test', '-count=1', './internal/...')
+        # The application layer too. On Windows Wails needs no cgo, so ./cmd can
+        # be tested here under the same CGO_ENABLED=0 rule as everything else --
+        # which is why this lives in make.ps1 and not in the Makefile.
+        Invoke-Step 'go' @('vet', './cmd/...')
+        Invoke-Step 'go' @('test', '-count=1', './cmd/...')
     }
     'build' {
         Invoke-Step 'wails' @('build', '-clean', '-trimpath', '-ldflags', $ldflags)
@@ -72,7 +76,7 @@ switch ($Task) {
     }
     default {
         Write-Host 'dev    - jalankan aplikasi dengan hot reload'
-        Write-Host 'test   - go vet + go test lapis inti (./internal/...)'
+        Write-Host 'test   - go vet + go test (./internal/... dan ./cmd/...)'
         Write-Host 'build  - bangun binari untuk platform saat ini (build/bin/)'
         Write-Host 'clean  - hapus keluaran build'
     }

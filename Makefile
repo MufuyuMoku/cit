@@ -29,7 +29,9 @@ dev:
 
 # Only the pure-Go layers. The desktop shell (root and ./cmd) is left out on
 # purpose: Wails forces CGO_ENABLED=1 on macOS and Linux to bind webkit2gtk and
-# Cocoa, so it cannot be checked under this rule. `make build` covers it.
+# Cocoa, so it cannot be checked under this rule. `make build` covers it, and CI
+# runs ./cmd's own tests on the Windows runner, where Wails needs no cgo at all
+# -- see make.ps1, which is the one that can do it locally.
 test:
 	go vet ./internal/...
 	go test -count=1 ./internal/...

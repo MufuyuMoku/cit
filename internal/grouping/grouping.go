@@ -643,3 +643,70 @@ func (u *unionFind) clusters() [][]int {
 	sort.SliceStable(out, func(a, b int) bool { return out[a][0] < out[b][0] })
 	return out
 }
+
+// Detach moves one tracked file onto an asset of its own and records that it
+// belongs with none of the files it was sharing with.
+//
+// This is what the interface's "pisahkan dari karya ini" does, and it is not the
+// same as Split. Split is about a pair: it records one judgement, between the two
+// paths named. Detaching a file from an asset holding four others and recording
+// only one of those five relationships would leave the other three to be decided
+// by score on the next pass — and a file could be dragged back out of its new
+// asset by whichever of its former siblings it still resembles, which is not what
+// the user asked for.
+//
+// So a decision is recorded against every file that was in the asset. The file
+// ends up alone, and stays alone.
+func (g *Grouper) Detach(ctx context.Context, path string) error {
+	now := g.now()
+
+	tx, err := g.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("grouping: mulai transaksi: %w", err)
+	}
+	defer tx.Rollback()
+
+	file, err := trackedFile(ctx, tx, path)
+	if err != nil {
+		return err
+	}
+
+	siblings, err := store.ObservedFilesByAsset(ctx, tx, file.AssetID)
+	if err != nil {
+		return err
+	}
+
+	var others []string
+	for _, s := range siblings {
+		if s.Path != path {
+			others = append(others, s.Path)
+		}
+	}
+	if len(others) == 0 {
+		// Already alone. Recording a decision against nobody would be a no-op, and
+		// moving it to a new asset would only churn ids.
+		return nil
+	}
+
+	for _, other := range others {
+		if err := store.PutGroupingDecision(ctx, tx, other, path, store.Apart, now); err != nil {
+			return err
+		}
+	}
+
+	newAsset, err := store.CreateAsset(ctx, tx, filepath.Base(path), now)
+	if err != nil {
+		return err
+	}
+	if _, err := store.MoveFileToAsset(ctx, tx, path, newAsset, now); err != nil {
+		return err
+	}
+	if _, err := store.DeleteEmptyAsset(ctx, tx, file.AssetID); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("grouping: commit: %w", err)
+	}
+	return nil
+}

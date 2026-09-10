@@ -48,8 +48,8 @@
 // reasserts itself on the next scan is not a proposal, it is an argument the
 // user cannot win.
 //
-// Every Split and Merge is recorded in grouping_decisions and outranks every
-// score, for ever. Transitivity is checked too: if the user pulled A and B
+// Every Split, Merge and Detach is recorded in grouping_decisions and outranks
+// every score, for ever. Transitivity is checked too: if the user pulled A and B
 // apart, no chain of A-C, C-B similarities may quietly reunite them. Before two
 // clusters are joined, every pair across the boundary is checked against the
 // recorded decisions.
@@ -83,6 +83,14 @@
 //
 // One pass runs at a time, and the scoring sweep checks for cancellation once per
 // row so closing the window does not appear to hang.
+//
+// Detach is the one the interface offers, and it differs from Split in the way
+// that matters. Split concerns a pair and records one judgement. Pulling a file
+// out of an asset holding four others and recording only one of those five
+// relationships would leave the rest to be settled by score on the next pass, and
+// the file could be dragged back by whichever former sibling it still resembles.
+// So Detach records a decision against every file the path was sharing with: it
+// ends up alone, and stays alone.
 //
 // # What splitting and merging may not break
 //
