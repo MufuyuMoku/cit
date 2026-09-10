@@ -15,6 +15,24 @@
 //     compare each cell against the mean. Small Hamming distance means the
 //     pictures look alike.
 //
+// The picture does more than contribute a score: far enough apart, it vetoes a
+// name match outright, because names collide far more often than images do. That
+// veto has one exception — two files that normalise to the same name and sit in
+// the same folder tree are one work even when one is a radical revision that
+// looks nothing like the other, which is what a revision is.
+//
+// The folder half of that condition is not a detail. logo_v2.png is the most
+// ordinary filename there is, and a freelancer has one in every client folder.
+// Without it the identical-name exception switches the veto off exactly where it
+// is needed most, and two clients' histories are silently scrambled into one
+// asset. Folders are compared segment by segment, not by string prefix: "proyek"
+// is a prefix of "proyek-lain" without containing it.
+//
+// Explain reports the whole breakdown for one pair — every input, every
+// component, the veto, the manual decision if there is one — and changes
+// nothing. The weights are judgement calls that will need tuning against real
+// filenames, and tuning them without being able to see inside is guesswork.
+//
 // # The hash comes from the thumbnail, never the original
 //
 // Retention will one day discard the chunks behind old versions. Reading the
@@ -35,6 +53,36 @@
 // apart, no chain of A-C, C-B similarities may quietly reunite them. Before two
 // clusters are joined, every pair across the boundary is checked against the
 // recorded decisions.
+//
+// Holding that under concurrency takes one more thing, and it is load-bearing.
+// Scoring happens outside any transaction, so there is a window between reading
+// the catalogue and writing the conclusions — and a user who split two files by
+// hand inside that window used to have the decision undone by arithmetic older
+// than the decision itself: the row stayed in grouping_decisions while the two
+// files were merged back together. Regroup therefore records
+// store.GroupingGeneration before it starts scoring and re-reads it inside the
+// transaction that would do the writing. If the number moved, the pass returns
+// ErrStale and writes nothing. Remove that check and the promise above is no
+// longer true.
+//
+// # When it runs
+//
+// Not from inside a scan. Scoring is quadratic in the number of tracked files:
+// around 860 ns per pair, so half a second at a thousand files and forty-odd
+// seconds at ten thousand, while a watch cycle comes round every second. Calling
+// it per scan gives, past a couple of thousand files, a scan that can never catch
+// up with itself — and the slowdown arrives gradually as the archive grows, long
+// after anyone would think to look for it.
+//
+// Scheduler runs it beside ingesting instead. A scan that changed something marks
+// the catalogue dirty and starts nothing, because someone is evidently still
+// working; a scan that changed nothing is the signal that they stopped, and that
+// is when a pass starts, on its own goroutine, no more often than
+// DefaultMinInterval. Wire it up with ingest.WithAfterScan — the hook passes a
+// bool rather than a Result so neither package has to import the other.
+//
+// One pass runs at a time, and the scoring sweep checks for cancellation once per
+// row so closing the window does not appear to hang.
 //
 // # What splitting and merging may not break
 //

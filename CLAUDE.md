@@ -80,6 +80,8 @@ Padanan istilah, pakai konsisten:
 3. Setelah selesai satu milestone, **berhenti dan laporkan**: apa yang dibangun, tes apa yang lulus, keputusan apa yang kamu ambil sendiri. Tunggu instruksi berikutnya.
 4. Kalau spesifikasi tidak menjawab suatu pertanyaan, **jangan menebak diam-diam.** Ambil keputusan paling sederhana, lalu sebutkan di laporan bahwa kamu mengambilnya.
 5. Jangan menulis kode placeholder yang mengembalikan nilai palsu. Kalau belum diimplementasikan, kembalikan error yang jelas.
+6. **Setiap milestone yang selesai wajib menghasilkan satu berkas devlog sebelum di-tag.** Satu berkas per milestone di `docs/devlog/`, dinamai seperti tag-nya (`m2.md`, `m4a.md`). Isinya empat bagian saja: apa yang dibangun, keputusan yang diambil dan alasannya, bug yang ketahuan dan bagaimana ketahuannya, apa yang sengaja tidak dibangun. Satu halaman, bukan laporan lengkap — dan jangan salin keluaran `go test` ke dalamnya. Sumbernya riwayat git dan kode itu sendiri, bukan ingatan. Bagian ketiga yang paling mudah dilewatkan dan paling berharga: yang perlu dicatat bukan hanya bug-nya, tapi apa yang membuatnya ketahuan.
+   **Sebelum menulis devlog, periksa dulu `doc.go` tiap paket yang tersentuh milestone itu masih benar**, dan perbaiki yang sudah tidak benar. `doc.go` adalah sumber utama devlog dan hal pertama yang dibaca sesi berikutnya; dokumentasi yang salah lebih buruk daripada yang tidak ada, karena pembacanya tidak tahu harus curiga. Yang sudah akurat jangan ditulis ulang — hanya yang menyesatkan, termasuk daftar yang tampak lengkap padahal ada yang hilang.
 
 ## Invarian yang tidak boleh dilanggar
 

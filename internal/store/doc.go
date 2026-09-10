@@ -1,9 +1,47 @@
 // Package store owns the SQLite database: schema, migrations, and queries.
 //
-// So far it holds only the vault's tables — chunks, files, and the ordered
-// file_chunks mapping between them. Asset, version and ticket tables belong to
-// later milestones.
+// Two groups of tables live here, in one database file.
 //
-// Version metadata will live here and is never pruned: retention only ever
-// discards chunks, so the timeline can never have a hole in it.
+// The vault's own bookkeeping, about stored content addressed by hash and
+// nothing to do with paths on disk: chunks, files, and the ordered file_chunks
+// mapping between them.
+//
+// The catalogue, which is what the user actually sees: assets (one piece of
+// work), versions (one per observed save), observed_files (the live view of the
+// watched folders, one row per tracked path currently on disk), previews (what
+// came of trying to draw a thumbnail for a piece of content, plus its perceptual
+// hash), grouping_decisions (the judgements the user made by hand), and
+// grouping_generation (a counter that moves whenever anything grouping reads has
+// changed).
+//
+// Unlike versions, observed_files rows are mutable and disposable: they describe
+// the present, not the history.
+//
+// # Invariants the database enforces itself
+//
+// Version metadata is never pruned — retention only ever discards chunks, so the
+// timeline can never have a hole in it. A version whose content has been thinned
+// away still appears, marked by content_present. This is held by the
+// versions_are_permanent trigger rather than by callers remembering: releasing
+// content is an UPDATE of content_present, never a DELETE.
+//
+// Two more rules are kept the same way, each because the damage from breaking it
+// would be silent:
+//
+//   - versions_need_file_key_on_insert/update: a version with no file_key never
+//     moves when an asset is split, so it detaches from its work and disappears
+//     off the timeline with no error and no visible gap.
+//   - The generation_* triggers on observed_files, versions and
+//     grouping_decisions: grouping scores every pair of files outside any
+//     transaction, which takes far too long to hold one open, and needs to know
+//     whether the catalogue moved underneath a conclusion it had already drawn.
+//     Because the counter is kept here, code that knows nothing about grouping
+//     still maintains it.
+//
+// Schema versions live in SQLite's own PRAGMA user_version. Migrations are
+// append-only and each runs in its own transaction together with its version
+// bump; a database written by a newer build is refused rather than opened. See
+// migrate.go and migrations.go.
+//
+// Ticket tables belong to a later milestone.
 package store
