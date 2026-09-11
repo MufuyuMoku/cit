@@ -448,3 +448,77 @@ func TestGenerationIsNotVisibleUntilTheTransactionCommits(t *testing.T) {
 			"tidak boleh membatalkan pengelompokan", before, after)
 	}
 }
+
+// --- migration 9: tickets ---------------------------------------------------
+
+// The ticket rules must cover rows that predate the tickets table, because those
+// are exactly the versions a user's first ticket will hang off.
+func TestMigrationNineAddsTicketsToAPopulatedDatabase(t *testing.T) {
+	db := rawDB(t)
+	ctx := t.Context()
+
+	// Stop one short, then fill the database the way a working install would be.
+	if err := migrateWith(ctx, db, migrations[:8]); err != nil {
+		t.Fatalf("migrasi ke versi 8: %v", err)
+	}
+	assetID, err := CreateAsset(ctx, db, "poster.psd", testTime)
+	if err != nil {
+		t.Fatalf("CreateAsset: %v", err)
+	}
+	versionID, err := AddVersion(ctx, db, Version{
+		AssetID: assetID, FileHash: "h1", Size: 10,
+		ObservedAt: testTime, ModifiedAt: testTime,
+		SourcePath: "/kerja/poster.psd", FileKey: "/kerja/poster.psd",
+	})
+	if err != nil {
+		t.Fatalf("AddVersion: %v", err)
+	}
+
+	// No tickets yet.
+	if _, err := CountOpenTickets(ctx, db); err == nil {
+		t.Fatal("tabel tiket sudah ada sebelum migrasi 9")
+	}
+
+	if err := migrateWith(ctx, db, migrations); err != nil {
+		t.Fatalf("migrasi ke versi terakhir: %v", err)
+	}
+
+	// A ticket on a version that predates the table works.
+	id, err := AddTicket(ctx, db, Ticket{
+		VersionID: versionID, Direction: WaitingOnThem,
+		Note: "menunggu warna", CreatedAt: testTime,
+	})
+	if err != nil {
+		t.Fatalf("AddTicket pada versi lama: %v", err)
+	}
+
+	// And the rules cover it: it cannot be orphaned, and a newer version flags it
+	// rather than closing it.
+	if _, err := db.ExecContext(ctx, `DELETE FROM versions WHERE id = ?`, versionID); err == nil {
+		t.Error("versi bertiket bisa dihapus")
+	}
+
+	saved := testTime.Add(2 * time.Hour)
+	if _, err := AddVersion(ctx, db, Version{
+		AssetID: assetID, FileHash: "h2", Size: 20,
+		ObservedAt: saved, ModifiedAt: saved,
+		SourcePath: "/kerja/poster.psd", FileKey: "/kerja/poster.psd",
+	}); err != nil {
+		t.Fatalf("AddVersion: %v", err)
+	}
+	got, err := TicketByID(ctx, db, id)
+	if err != nil {
+		t.Fatalf("TicketByID: %v", err)
+	}
+	if got.Status != TicketMaybeDone {
+		t.Errorf("tiket berstatus %q setelah versi baru, mau %q", got.Status, TicketMaybeDone)
+	}
+	if !got.IsOpen() {
+		t.Error("tiket dianggap tertutup padahal hanya ditandai")
+	}
+
+	// Everything that was there is still there.
+	if n, err := CountVersions(ctx, db); err != nil || n != 2 {
+		t.Errorf("jumlah versi = %d (%v), mau 2", n, err)
+	}
+}

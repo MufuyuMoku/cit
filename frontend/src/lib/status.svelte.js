@@ -1,6 +1,6 @@
 import { Status } from '$lib/wailsjs/go/cmd/App.js';
 
-/** @typedef {{ready: boolean, problem: string, dataDir: string, folders: string[], watching: boolean, assets: number, versions: number, unreadable: string[], appVersion: string}} AppStatus */
+/** @typedef {{ready: boolean, problem: string, dataDir: string, folders: string[], watching: boolean, assets: number, versions: number, openTickets: number, toReview: number, unreadable: string[], appVersion: string}} AppStatus */
 
 /** @type {AppStatus} */
 const empty = {
@@ -11,6 +11,8 @@ const empty = {
 	watching: false,
 	assets: 0,
 	versions: 0,
+	openTickets: 0,
+	toReview: 0,
 	unreadable: [],
 	appVersion: ''
 };

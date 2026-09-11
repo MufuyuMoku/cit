@@ -12,6 +12,7 @@ import (
 	"github.com/MufuyuMoku/cit/internal/ingest"
 	"github.com/MufuyuMoku/cit/internal/preview"
 	"github.com/MufuyuMoku/cit/internal/store"
+	"github.com/MufuyuMoku/cit/internal/ticket"
 	"github.com/MufuyuMoku/cit/internal/vault"
 )
 
@@ -30,6 +31,7 @@ type service struct {
 	ingester *ingest.Ingester
 	grouper  *grouping.Grouper
 	sched    *grouping.Scheduler
+	tickets  *ticket.Tracker
 
 	// watchCancel stops the current watch loop. It is replaced whenever the set
 	// of watched folders changes, because ingest.Watch is given its roots once.
@@ -95,6 +97,11 @@ func openService() (*service, error) {
 			}
 		}),
 	)
+
+	// Tickets need nothing wired to them. A newer version moving open tickets
+	// into the review inbox is a database trigger, so ingest stays unaware that
+	// tickets exist at all.
+	s.tickets = ticket.New(db)
 
 	// The hook is the only thing joining ingest and grouping; neither package
 	// imports the other.

@@ -96,7 +96,10 @@
 //
 // Tickets attach to versions, and versions attach to assets. Moving a file
 // between assets must therefore move its versions with it, or a timeline loses
-// entries and the tickets M6 will hang off them point at the wrong work.
+// entries. Tickets need nothing extra from grouping: a ticket names a version,
+// and its work is derived through that version, so moving the version moves the
+// ticket. internal/grouping/ticket_test.go proves it for Detach, Split, and a
+// ticket opened while a Regroup is in flight.
 //
 // Versions are matched by file_key, not source_path. source_path is a
 // historical record of where a version was observed and must stay one; file_key

@@ -63,15 +63,21 @@ func (a *App) shutdown(ctx context.Context) {
 // Status is what the interface needs to describe the state of things without
 // asking three separate questions.
 type Status struct {
-	Ready      bool     `json:"ready"`
-	Problem    string   `json:"problem"`
-	DataDir    string   `json:"dataDir"`
-	Folders    []string `json:"folders"`
-	Watching   bool     `json:"watching"`
-	Assets     int      `json:"assets"`
-	Versions   int      `json:"versions"`
-	Unreadable []string `json:"unreadable"`
-	AppVersion string   `json:"appVersion"`
+	Ready    bool     `json:"ready"`
+	Problem  string   `json:"problem"`
+	DataDir  string   `json:"dataDir"`
+	Folders  []string `json:"folders"`
+	Watching bool     `json:"watching"`
+	Assets   int      `json:"assets"`
+	Versions int      `json:"versions"`
+
+	// OpenTickets is everything not yet closed; ToReview is the subset sitting in
+	// the review inbox. Both are plain counts shown in place — there is no badge
+	// and nothing turns red.
+	OpenTickets int      `json:"openTickets"`
+	ToReview    int      `json:"toReview"`
+	Unreadable  []string `json:"unreadable"`
+	AppVersion  string   `json:"appVersion"`
 }
 
 // Status reports the state of the application.
@@ -100,6 +106,12 @@ func (a *App) Status() Status {
 	}
 	if n, err := store.CountVersions(a.ctx, a.svc.db); err == nil {
 		s.Versions = n
+	}
+	if n, err := store.CountOpenTickets(a.ctx, a.svc.db); err == nil {
+		s.OpenTickets = n
+	}
+	if list, err := store.TicketsByStatus(a.ctx, a.svc.db, store.TicketMaybeDone); err == nil {
+		s.ToReview = len(list)
 	}
 	for _, p := range a.svc.ingester.Problems() {
 		s.Unreadable = append(s.Unreadable,

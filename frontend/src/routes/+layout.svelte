@@ -1,5 +1,6 @@
 <script>
 	import '../app.css';
+	import { page } from '$app/state';
 	import { ChooseFolder, RemoveFolder, RevealDataDir } from '$lib/wailsjs/go/cmd/App.js';
 	import { message } from '$lib/format.js';
 	import { statusStore } from '$lib/status.svelte.js';
@@ -55,6 +56,25 @@
 			<span class="name">CIT</span>
 			<span class="faint version">{status.appVersion}</span>
 		</a>
+
+		<nav class="links">
+			<a href="/" class:active={page.url.pathname === '/'}>Karya</a>
+			<a href="/menunggu" class:active={page.url.pathname === '/menunggu'}>
+				Menunggu
+				{#if status.openTickets > 0}
+					<span class="count">{status.openTickets}</span>
+				{/if}
+			</a>
+			<a href="/tinjauan" class:active={page.url.pathname === '/tinjauan'}>
+				Tinjauan
+				{#if status.toReview > 0}
+					<!-- A plain count, not a badge. Nothing here is an alarm: these are
+					     suggestions waiting to be looked at whenever the user feels like
+					     it. -->
+					<span class="count">{status.toReview}</span>
+				{/if}
+			</a>
+		</nav>
 
 		<div class="spacer"></div>
 
@@ -173,6 +193,43 @@
 
 	.spacer {
 		flex: 1;
+	}
+
+	.links {
+		display: flex;
+		align-items: center;
+		gap: 2px;
+		margin-left: 8px;
+	}
+
+	.links a {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		padding: 4px 10px;
+		border-radius: var(--radius-sm);
+		color: var(--fg-muted);
+		transition: background 120ms ease, color 120ms ease;
+	}
+
+	.links a:hover {
+		background: var(--surface-sunken);
+		color: var(--fg);
+	}
+
+	.links a.active {
+		background: var(--accent-soft);
+		color: var(--accent);
+	}
+
+	/* A count, not a badge: same muted ink as its label, no fill, no red. */
+	.count {
+		font-size: 11px;
+		font-variant-numeric: tabular-nums;
+		padding: 0 5px;
+		border-radius: 999px;
+		border: 1px solid var(--line-strong);
+		background: var(--surface);
 	}
 
 	.watching {

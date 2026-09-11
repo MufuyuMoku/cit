@@ -409,4 +409,102 @@ var migrations = []migration{
 			) STRICT`,
 		},
 	},
+	{
+		version: 9,
+		name:    "tiket dan kotak tinjauan",
+		stmts: []string{
+			// A ticket is a piece of work in flight, attached to one recorded save.
+			//
+			// version_id, not a path and not a bare content hash, and the choice is
+			// the whole design:
+			//
+			//   - Not a path or a filename. Renaming a file would sever the ticket
+			//     from the thing it is about, silently, and the user would never be
+			//     told which of their outstanding work had just been forgotten.
+			//   - Not a bare file_hash either. Two byte-identical saves are one
+			//     piece of content but two versions, possibly on two different
+			//     works; a ticket keyed on the hash alone would appear on both, and
+			//     could not say which asset it belonged to.
+			//   - version_id names exactly one recorded save. Versions are
+			//     permanent — versions_are_permanent makes deleting one impossible —
+			//     so this reference can never dangle.
+			//
+			// And it is what binds a ticket to an asset without storing an asset_id
+			// here. A version already carries asset_id; the ticket's work is
+			// whatever work that version currently belongs to. Storing our own copy
+			// would be a second truth that drifts the moment grouping moves the
+			// version, which it does routinely — Detach, Split, Merge and Regroup
+			// all repoint versions between assets. Deriving it through the version
+			// means a ticket follows its work automatically and cannot be stranded
+			// on the wrong one.
+			//
+			// "A ticket can never stand on its own" is therefore held by the shape
+			// of the schema rather than by anyone remembering: version_id is NOT
+			// NULL, it references a row that cannot be deleted, and that row's
+			// asset_id is itself NOT NULL and references an asset that cannot be
+			// deleted while it holds versions. There is no sequence of writes that
+			// leaves a ticket floating. That constraint is what keeps CIT from
+			// turning into a generic to-do application.
+			`CREATE TABLE IF NOT EXISTS tickets (
+				id         INTEGER PRIMARY KEY AUTOINCREMENT,
+				version_id INTEGER NOT NULL REFERENCES versions(id) ON DELETE RESTRICT,
+
+				-- Which way the waiting runs. 'waiting_on_them' is someone else's
+				-- move and is shown with its age; 'waiting_on_me' is work owed.
+				direction  TEXT    NOT NULL CHECK (direction IN ('waiting_on_them', 'waiting_on_me')),
+
+				-- 'open', 'maybe_done' (a newer version arrived and it needs a look),
+				-- or 'closed'. Only a person moves a ticket to 'closed'.
+				status     TEXT    NOT NULL DEFAULT 'open'
+				           CHECK (status IN ('open', 'maybe_done', 'closed')),
+
+				note       TEXT    NOT NULL DEFAULT '',
+
+				-- Who is waiting, or who is being waited on. Free text: this is a
+				-- note to oneself, not a contact record, and CIT has no accounts.
+				who        TEXT    NOT NULL DEFAULT '',
+
+				created_at INTEGER NOT NULL,
+
+				-- When a newer version moved this into the review inbox.
+				flagged_at INTEGER,
+				closed_at  INTEGER
+			) STRICT`,
+
+			`CREATE INDEX IF NOT EXISTS idx_tickets_version ON tickets(version_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_tickets_status  ON tickets(status)`,
+
+			// The foreign key already refuses a ticket with no version. This says so
+			// in the user's language, because "FOREIGN KEY constraint failed" tells
+			// whoever hits it nothing about which rule they broke or why it exists.
+			`CREATE TRIGGER IF NOT EXISTS tickets_need_a_version
+			BEFORE INSERT ON tickets
+			WHEN (SELECT count(*) FROM versions WHERE id = NEW.version_id) = 0
+			BEGIN
+				SELECT RAISE(ABORT,
+					'tiket wajib menempel pada sebuah versi: tiket yang bisa berdiri sendiri mengubah CIT jadi aplikasi to-do biasa');
+			END`,
+
+			// A newer save on a work with open tickets does not close them. It moves
+			// them into the review inbox marked 'maybe_done' and leaves the judgement
+			// to the person: the system observes and proposes, the human decides.
+			// Nothing pops up, nothing is announced; the inbox simply has something
+			// in it the next time it is opened.
+			//
+			// Kept as a trigger rather than a call in ingest for two reasons: ingest
+			// has no business knowing tickets exist, and a rule this easy to forget
+			// should not depend on every future writer of versions remembering it.
+			`CREATE TRIGGER IF NOT EXISTS tickets_flagged_by_a_newer_version
+			AFTER INSERT ON versions
+			BEGIN
+				UPDATE tickets
+				SET status = 'maybe_done', flagged_at = NEW.observed_at
+				WHERE status = 'open'
+				  AND version_id IN (
+					SELECT id FROM versions
+					WHERE asset_id = NEW.asset_id AND id <> NEW.id
+				  );
+			END`,
+		},
+	},
 }
