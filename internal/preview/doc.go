@@ -25,10 +25,10 @@
 //
 // The consequences, which are real:
 //
-//   - Sync in M5 must carry thumbnails explicitly. Comparing two lists of chunk
-//     hashes will not move them, and the receiving side cannot regenerate the
-//     ones whose originals have already been thinned. A bundle that omits them
-//     arrives with holes in its timeline.
+//   - Sync, whenever it gets built, must carry thumbnails explicitly. Comparing
+//     two lists of chunk hashes will not move them, and the receiving side
+//     cannot regenerate the ones whose originals have already been thinned. A
+//     bundle that omits them arrives with holes in its timeline.
 //   - There is no chunk-level deduplication of thumbnails. This costs almost
 //     nothing: they are tens of kilobytes and below the vault's 256 KiB minimum
 //     chunk size anyway, so chunking would never have shared a byte between two
