@@ -58,8 +58,17 @@ diunduh.
 
 ## Status
 
-Milestone terakhir ter-tag: **`m6`** (`5339e42`), tiket dan kotak tinjauan.
-Skema basis data versi 9. Semua tes hijau dengan `CGO_ENABLED=0`:
+**Dihentikan setelah M6.** Tag terakhir **`m6`** (`5339e42`), tiket dan kotak
+tinjauan.
+
+Sebelum melanjutkan ke retensi, aku bertanya ke siswa DKV — target penggunanya —
+bagaimana mereka menyimpan dan melacak berkas desain. Mereka tidak merasakan
+masalah yang ingin dipecahkan CIT. Membangun lebih jauh untuk masalah yang tidak
+dirasakan penggunanya bukan keputusan yang benar, jadi pengembangannya berhenti
+di sini.
+
+Yang ada di repo ini tetap catatan pekerjaan yang utuh sampai titik itu. Skema
+basis data versi 9, dan semua tes hijau dengan `CGO_ENABLED=0`:
 
 | Paket | Isi | Tes |
 |---|---|---:|
@@ -71,12 +80,12 @@ Skema basis data versi 9. Semua tes hijau dengan `CGO_ENABLED=0`:
 | `internal/ticket` | tiket & kotak tinjauan | 7 |
 | `cmd` | lapis aplikasi Wails | 18 |
 
-Belum dibangun: **`internal/retention`** (penipisan riwayat dan pengumpulan
+Tidak dibangun: **`internal/retention`** (penipisan riwayat dan pengumpulan
 sampah) dan **`internal/sync`** (menyalin antar folder atau disk lepas) — dua
-paket yang sejauh ini hanya berisi dokumentasi rancangan. Antarmuka sudah siap
-menampilkan versi yang isinya dibuang, tapi belum ada yang membuangnya.
-Pengelompokan masih O(n²): sekitar setengah detik pada 1.000 berkas terlacak,
-diukur dan bukan diperkirakan.
+paket yang hanya berisi dokumentasi rancangan. Antarmuka sudah siap menampilkan
+versi yang isinya dibuang, tapi tidak ada yang membuangnya. Pengelompokan masih
+O(n²): sekitar setengah detik pada 1.000 berkas terlacak, diukur dan bukan
+diperkirakan.
 
 ## Tumpukan teknologi
 
